@@ -9,11 +9,10 @@ extern    _printf
 section   .text
 
 _main:
-  push      rbx                     ; Call stack must be aligned
+  push      rsp                     ; Required for alignment
 
-  lea       rdi, [rel format]       ; Print the first prime (2)
-  mov       rsi, 2
-  call      _printf
+  mov r12, 2
+  call      print_r12
 
   mov       r12, 3                  ; p = 3
 
@@ -34,9 +33,7 @@ is_prime_loop:
   jmp is_prime_loop
 
 is_prime:
-  lea       rdi, [rel format]       ; Print this prime (r12)
-  mov       rsi, r12
-  call      _printf
+  call print_r12
 
 done:
   lea       r12, [r12+2]            ; p += 2
@@ -44,8 +41,17 @@ done:
   jl        iteration_loop
 
 exit:
-  pop       rbx                     ; Fix up stack before returning
+  pop       rsp                     ; Fix up stack before returning
   xor       rax, rax                ; return 0
+  ret
+
+; Print out the number at r12.
+print_r12:
+  push rsp                          ; Required for alignment.
+  lea       rdi, [rel format]
+  mov       rsi, r12
+  call      _printf
+  pop rsp
   ret
 
 section   .data

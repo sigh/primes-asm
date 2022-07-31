@@ -1,8 +1,9 @@
 ; Run with:
 ;   nasm -fmacho64 hello.asm && gcc hello.o && ./a.out
 
+MAX_P  equ 100
+
 global    _main
-extern    _puts
 extern    _printf
 
 section   .text
@@ -10,35 +11,35 @@ section   .text
 _main:
   push      rbx                     ; Call stack must be aligned
 
-  mov       r12, $47                 ; x = p
-  mov       r13d, $2                 ; i = 2
-  mov       r14, $1                  ; is_prime = true
-is_prime_loop:
-  lea       rdi, [rel format]       ; First argument: format string
-  mov       rsi, r13                 ; Second argument: number to formart
-  call      _printf
+  mov       r12, 2                  ; p = 2
 
+iteration_loop:
+  mov       r13d, 2                 ; i = 2
+
+is_prime_loop:
   mov       eax, r13d
   mul       eax                     ; a = i*i
   cmp       rax, r12                ; if (a > p) done
-  jg        done
+  jg        is_prime
   xor       rdx, rdx
   mov       rax, r12
   idiv      r13                     ; d = p % i
   test      rdx, rdx
-  jz        not_prime               ; if (d == 0) goto not_prime
+  jz        done                    ; if (d == 0) goto done
   inc       r13d                    ; i++
   jmp is_prime_loop
 
-not_prime:
-  mov       r14, $0
-
-done:
-
+is_prime:
   lea       rdi, [rel format]       ; First argument: format string
-  mov       rsi, r14                ; Second argument: number to formart
+  mov       rsi, r12                 ; Second argument: number to formart
   call      _printf
 
+done:
+  inc r12
+  cmp r12, MAX_P
+  jne iteration_loop
+
+exit:
   pop       rbx                     ; Fix up stack before returning
   xor       rax, rax                ; return 0
   ret

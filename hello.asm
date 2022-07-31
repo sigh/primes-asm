@@ -2,7 +2,7 @@
 ;   nasm -fmacho64 hello.asm && gcc hello.o && ./a.out
 
 MAX_P   equ 10_000_000
-; MAX_P   equ 10
+; MAX_P   equ 100
 
 NEWLINE     equ 10 ; newline ascii character
 
@@ -14,34 +14,30 @@ section   .text
 _main:
   push      rsp                     ; Required for alignment
 
-  mov       r12, 2
-  call      print_r12
+  mov       r12, 1                  ; p = 1
+  lea       r13, [rel prime_array]  ; q = prime_array
 
-  mov       r12, 3                  ; p = 3
+find_next_p:
+  xor       eax, eax                ; Must clear because we only read bytes into al
+find_next_p_loop:
+  inc       r12                     ; p++;
+  cmp       r12, MAX_P              ; if (p > MAX_P) exit
+  jg        exit
+  mov       al, [r13+r12]           ; if (q[p] == 0) find_next_p
+  test      eax, eax
+  jz        find_next_p_loop
 
-iteration_loop:
-  mov       r13d, 3                 ; i = 3
+  call      print_r12               ; p (r12) is a prime, print it out.
 
-is_prime_loop:
-  mov       eax, r13d
-  mul       eax                     ; a = i*i
-  cmp       rax, r12                ; if (a > p) done
-  jg        is_prime
-  xor       rdx, rdx
-  mov       rax, r12
-  idiv      r13                     ; d = p % i
-  test      rdx, rdx
-  jz        done                    ; if (d == 0) goto done
-  lea       r13, [r13+2]            ; i += 2
-  jmp is_prime_loop
+  mov       rax, r12                ; a = p*p
+  mul       rax
 
-is_prime:
-  call print_r12
-
-done:
-  lea       r12, [r12+2]            ; p += 2
-  cmp       r12, MAX_P
-  jl        iteration_loop
+clear_prime_multiples:
+  cmp       rax, MAX_P              ; if (a > MAX_P) continue
+  jg        find_next_p
+  mov       [r13+rax], byte 0       ; q[a] = 0
+  add       rax, r12                ; a += p
+  jmp       clear_prime_multiples
 
 exit:
   pop       rsp                     ; Fix up stack before returning
@@ -73,3 +69,7 @@ print_buffer:
   times 20 db 0                     ; Enough space to store 2**64
 print_buffer_end:
   db 0
+
+prime_array:
+  db 0, 0
+  times MAX_P db 1

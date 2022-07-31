@@ -1,7 +1,7 @@
 ; Run with:
 ;   nasm -fmacho64 hello.asm && gcc hello.o && ./a.out
 
-MAX_P   equ 10_000_000
+MAX_P   equ 100_000_000
 ; MAX_P   equ 100
 
 NEWLINE     equ 10 ; newline ascii character
@@ -16,6 +16,13 @@ _main:
 
   mov       r12, 1                  ; p = 1
   lea       r13, [rel prime_array]  ; q = prime_array
+
+  mov       rax, 2
+set_prime_array:
+  mov       [r13+rax], byte 1       ; q[a++] = 1
+  inc       rax
+  cmp       rax, MAX_P
+  jle       set_prime_array
 
 find_next_p:
   xor       eax, eax                ; Must clear because we only read bytes into al
@@ -70,6 +77,8 @@ print_buffer:
 print_buffer_end:
   db 0
 
+section .bss
+
 prime_array:
-  db 0, 0
-  times MAX_P db 1
+  resb 1
+  resb MAX_P

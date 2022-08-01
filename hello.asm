@@ -41,9 +41,9 @@ find_next_p_loop:
 
   call      print_r12               ; p (r12) is a prime, print it out.
 
-  mov       rax, r12                ; a = p*p
-  mul       rax
-  shr       rax, 1
+  mov       rax, r12                ; a = (p*p)/2
+  mul       rax                     ; We want to start from p*p, but we shift a
+  shr       rax, 1                  ; because the array skips even numbers.
 
 clear_prime_multiples:
   cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) find_next_p
@@ -59,19 +59,22 @@ exit:
 
 ; Print out the number at r12.
 print_r12:
-  push      rsp                     ; Required for alignment.
   lea       rdi, [rel print_buffer_end] ; buf = print_buffer_end
-  mov       rax, r12                ; a = p
-  mov       rbx, 10                 ; b = 10
+  mov       rbx, r12                ; b = p
 print_r12_loop:
-  xor       rdx, rdx                ; clear d
-  idiv      rbx                     ; a, d = divmod(a, b)
-  lea       rdx, [rdx + 48]         ; d += 48 (convert digit to ascii)
+  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
+  mul       rbx                     ; | d:a = a * b
+  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
+  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24 (the 24 will convert the number to ascii).
+  add       rcx, rcx                ; c *= 2 (c = a*10 - 48)
+  sub       rbx, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
   dec       rdi                     ; buf--
-  mov       [rdi], dl               ; *buf = d (add char to buffer)
-  test      rax, rax                ; if a != 0: continue
+  mov       [rdi], bl               ; *buf = b (add char to buffer)
+  mov       rbx, rdx
+  test      rdx, rdx                ; if d != 0: continue
   jnz       print_r12_loop
 print_r12_finish:
+  push      rsp                     ; Required for alignment.
   call _puts
   pop       rsp
   ret

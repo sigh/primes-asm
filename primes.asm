@@ -1,5 +1,5 @@
 ; Run with:
-;   nasm -fmacho64 hello.asm && gcc hello.o && ./a.out
+;   nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
 MAX_P        equ 100_000_000
 ; MAX_P   equ 100

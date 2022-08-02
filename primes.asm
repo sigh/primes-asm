@@ -65,39 +65,56 @@ clear_prime_multiples_%1:
 
 clear_prime_multiples find_next_p
 
-; Collect and print the primes in the initial segment.
+; Collect the primes in the initial segment.
 collect_initial_primes:
-  mov       r14, 1                  ; x = 1
-  mov       r15, 0                  ; n = 0
-  mov       r12, 3                  ; p = 3
-
-collect_initial_primes_loop:
-  cmp       [r13+r14], byte 0
-  je        collect_initial_primes_next ; | if (candidate_array[x] == 0) collect_initial_primes_next
-collect_initial_primes_found:
+  xor       r14, r14                ; x = 0
+  xor       r15, r15                ; n = 0
   lea       r11, [rel initial_primes]
+collect_initial_primes_loop:
+  inc       r14                     ; |
+  cmp       r14, ARRAY_SIZE         ; |
+  jge       all_segments            ; | if (++x >= ARRAY_SIZE) goto all_segments
+  cmp       [r13+r14], byte 0
+  je        collect_initial_primes_loop ; | if (candidate_array[x] == 0) collect_initial_primes_loop
+collect_initial_primes_found:
+  lea       r12, [r14*2+1]          ; p = x*2 + 1
   mov       [r11+r15*8], r12        ; initial_primes[n] = p
   inc       r15                     ; n++
-  call print_r12
-collect_initial_primes_next:
-  inc       r14                     ; x++
-  add       r12, 2                  ; p += 2
-  cmp       r12, SEGMENT_SIZE           ; |
-  jl        collect_initial_primes_loop ; | if (p < SEGMENT_SIZE) collect_initial_prime_loop
+  jmp collect_initial_primes_loop
 
-rest_segments:
-  mov       rbx, 1
-rest_segments_loop:
+; Now that we've found the initial primes, iterate over all segments find the
+; rest.
+all_segments:
+  xor       rbx, rbx                ; b = 0 (segment number).
+all_segments_loop:
+
+; Print the primes in the current segment.
+print_segment:
+  xor       r14, r14                ; x = 0
+print_segment_loop:
+  cmp       [r13+r14], byte 0       ; |
+  je        print_segment_next      ; | if (candidate_array[x] == 0) print_segment_next
+print_segment_found:
+  imul      rax, rbx, SEGMENT_SIZE  ; |
+  lea       r12, [rax+r14*2+1]      ; | r12 = (SEGMENT_SIZE * b) + x*2 + 1
+  call print_r12
+print_segment_next:
+  inc       r14                     ; |
+  cmp       r14, ARRAY_SIZE         ; |
+  jl        print_segment_loop      ; | if (++x < ARRAY_SIZE) print_segment_loop
+
+; Finish up if we reached the last segment.
+  inc       rbx
   cmp       rbx, SEGMENT_SIZE
   jge       exit
 
-reset_candidate_array
-
+; Find the primes in the next segment by sieving out all of the initial primes.
 handle_segment:
-  mov       r14, 0                  ; x = 0
+  reset_candidate_array
+  xor       r14, r14                ; x = 0
 handle_segment_loop:
   cmp       r14, r15
-  jge       print_segment           ; if (x >= n) print_segment
+  jge       all_segments_loop       ; if (x >= n) all_segments_loop
   lea       r11, [rel initial_primes]
   mov       r12, [r11+r14*8]        ; p = initial_primes[x]
   inc       r14                     ; x++
@@ -117,26 +134,6 @@ handle_segment_loop:
   shr       rax, 1
 
 clear_prime_multiples handle_segment_loop
-
-; Print the primes in the current segment segment.
-print_segment:
-  mov       r14, 0                  ; x = 0
-print_segment_loop:
-  cmp       [r13+r14], byte 0
-  je        print_segment_next ; | if (candidate_array[x] == 0) print_segment_next
-print_segment_found:
-  mov       rax, SEGMENT_SIZE
-  mul       rbx
-  mov       r12, rax
-  lea       r12, [r12+r14*2+1]
-  call print_r12
-print_segment_next:
-  inc       r14                     ; x++
-  cmp       r14, ARRAY_SIZE         ; |
-  jl        print_segment_loop ; | if (p < SEGMENT_SIZE) print_segment_next
-
-  inc rbx
-  jmp rest_segments_loop
 
 exit:
   pop       rsp                     ; Fix up stack before returning

@@ -8,6 +8,14 @@ ARRAY_SIZE   equ SEGMENT_SIZE/2
 
 NEWLINE     equ 10 ; newline ascii character
 
+; Set the candidate array back to all 1s
+%macro reset_candidate_array 0
+  mov       rcx, ARRAY_SIZE
+  mov       al, byte 1
+  lea       rdi, [rel candidate_array]
+  rep       stosb                   ; Copy rcx copies of al to rdi.
+%endmacro
+
 global    _main
 extern    _puts
 
@@ -23,15 +31,9 @@ initialize:
   lea       r13, [rel candidate_array]
 
 ; Set the candidate array back to all 1s
-set_candidate_array:
-  mov       rax, 1
-set_candidate_array_loop:
-  mov       [r13+rax], byte 1       ; candidate_array[a++] = 1
-  inc       rax
-  cmp       rax, ARRAY_SIZE
-  jl        set_candidate_array_loop
-
+reset_candidate_array
 ; Find primes in initial segment.
+  mov       [r13], byte 0           ; candidate_array[0] = 0 (i.e. 1 is not a prime)
   mov       r14, 0                  ; x = 0
 
 ; Find the next prime to clear in the initial segment.
@@ -51,13 +53,17 @@ find_next_p:
   ; Shift a to account for the fact that the array only contains odd numbers.
   shr       rax, 1                  ; a = a/2 = (p*p)/2
 
-; Clear k*p from the initial segment.
-clear_initial_prime_multiples:
+; Clear rax+k*r12 from the candidate_array at r13.
+%macro clear_prime_multiples 1
+clear_prime_multiples_%1:
+  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) goto %1
+  jge       %1
   mov       [r13+rax], byte 0       ; candidate_array[a] = 0
   add       rax, r12                ; a += p
-  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) find_next_p
-  jge       find_next_p
-  jmp       clear_initial_prime_multiples
+  jmp       clear_prime_multiples_%1
+%endmacro
+
+clear_prime_multiples find_next_p
 
 ; Collect and print the primes in the initial segment.
 collect_initial_primes:
@@ -85,16 +91,7 @@ rest_segments_loop:
   cmp       rbx, SEGMENT_SIZE
   jge       exit
 
-; r15: n = number of primes
-; r11: initial_primes
-; Set the candidate array back to all 1s
-reset_candidate_array:
-  mov       rax, 0
-reset_candidate_array_loop:
-  mov       [r13+rax], byte 1       ; candidate_array[a++] = 1
-  inc       rax
-  cmp       rax, ARRAY_SIZE
-  jl        reset_candidate_array_loop
+reset_candidate_array
 
 handle_segment:
   mov       r14, 0                  ; x = 0
@@ -104,28 +101,22 @@ handle_segment_loop:
   lea       r11, [rel initial_primes]
   mov       r12, [r11+r14*8]        ; p = initial_primes[x]
   inc       r14                     ; x++
-  mov       rax, SEGMENT_SIZE
-  mul       rbx                     ; a = SEGMENT_SIZE * b
+
+  ; Find the first ODD multiple of p in the current segment.
+  ; Note that we only need to find the offset into the segment.
+  mov       rax, SEGMENT_SIZE       ; |
+  mul       rbx                     ; | a = SEGMENT_SIZE * b
   xor       rdx, rdx
-  idiv      r12                     ; d = a%p
-  test      rax, 1
-  jnz       odd
-  mov       rax, r12
-  sub       rax, rdx                ; a = p-a%p
-  shr       rax, 1
-  jmp clear_prime_multiples
-odd:
-  mov       rax, r12
-  add       rax, rax
-  sub       rax, rdx                ; a = p-a%p
+  idiv      r12                     ; d = a%p, a = a/p
+  and       al, 1                   ; |
+  mov       cl, al                  ; | c == 1 if a is an odd multiple
+  mov       rax, r12                ; |
+  shl       rax, cl                 ; | a = c ? p*2 : p
+  sub       rax, rdx                ; a -= (SEGMENT_SIZE*b)%p
+  ; Half the offset to get to the offset into the array (as the array skips even numbers).
   shr       rax, 1
 
-clear_prime_multiples:
-  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) handle_segment_loop
-  jge       handle_segment_loop
-  mov       [r13+rax], byte 0       ; candidate_array[a] = 0
-  add       rax, r12                ; a += p
-  jmp       clear_prime_multiples
+clear_prime_multiples handle_segment_loop
 
 ; Print the primes in the current segment segment.
 print_segment:

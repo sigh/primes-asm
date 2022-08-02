@@ -1,9 +1,10 @@
 ; Run with:
 ;   nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
-MAX_P        equ 100_000_000
+SEGMENT_SIZE equ 100
+MAX_PRIME    equ SEGMENT_SIZE*SEGMENT_SIZE
 ; MAX_P   equ 100
-ARRAY_SIZE   equ MAX_P/2 + 1
+ARRAY_SIZE   equ SEGMENT_SIZE/2 + 1
 
 NEWLINE     equ 10 ; newline ascii character
 
@@ -15,42 +16,63 @@ section   .text
 _main:
   push      rsp                     ; Required for alignment
 
+initialize:
   mov       r12, 2                  ; p = 2
   call      print_r12
-  mov       r14, 0                  ; x = 0
   mov       r12, 1                  ; p = 1
-  lea       r13, [rel prime_array]  ; q = prime_array
+  lea       r13, [rel candidate_array] ; q = candidate_array
 
+; Set the candidate array back to all 1s
+set_candidate_array:
   mov       rax, 1
-set_prime_array:
+set_candidate_array_loop:
   mov       [r13+rax], byte 1       ; q[a++] = 1
   inc       rax
   cmp       rax, ARRAY_SIZE
-  jl        set_prime_array
+  jl        set_candidate_array_loop
 
+; Find primes in initial segment.
+  mov       r14, 0                  ; x = 0
+
+; Find the next prime to clear in the initial segment.
 find_next_p:
-  xor       eax, eax                ; Must clear because we only read bytes into al
-find_next_p_loop:
   inc       r14                     ; x++
   add       r12, 2                  ; p += 2
-  cmp       r12, MAX_P              ; if (p > MAX_P) exit
-  jg        exit
-  mov       al, [r13+r14]           ; if (q[x] == 0) find_next_p
-  test      eax, eax
-  jz        find_next_p_loop
+  cmp       [r13+r14], byte 0
+  je        find_next_p             ; if (q[x] == 0) find_next_p
 
-  call      print_r12               ; p (r12) is a prime, print it out.
+  ; Calculate a = p*p. This is the first candidate we want to start clearing,
+  ; as all the previous candidates have been cleared already.
+  mov       rax, r12                ; a = p
+  mul       rax                     ; a = a*a
+  ; If p*p is past the end of the array, we found all the primes in the segment.
+  cmp       rax, ARRAY_SIZE         ; |
+  jge       collect_initial_primes  ; | if (a >= ARRAY_SIZE) collect_initial_primes
+  ; Shift a to account for the fact that the array only contains odd numbers.
+  shr       rax, 1                  ; a = a/2 = (p*p)/2
 
-  mov       rax, r12                ; a = (p*p)/2
-  mul       rax                     ; We want to start from p*p, but we shift a
-  shr       rax, 1                  ; because the array skips even numbers.
-
+; Clear k*p from the initial segment.
 clear_prime_multiples:
-  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) find_next_p
-  jge       find_next_p
   mov       [r13+rax], byte 0       ; q[a] = 0
   add       rax, r12                ; a += p
+  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) find_next_p
+  jge       find_next_p
   jmp       clear_prime_multiples
+
+; Collect and print the primes in the initial segment.
+collect_initial_primes:
+  mov       r14, 1                  ; x = 1
+  mov       r12, 3                  ; p = 3
+collect_initial_primes_loop:
+  cmp       [r13+r14], byte 0
+  je        collect_initial_primes_next ; | if (q[x] == 0) collect_initial_primes_next
+collect_initial_primes_found:
+  call print_r12
+collect_initial_primes_next:
+  inc       r14                     ; x++
+  add       r12, 2                  ; p += 2
+  cmp       r12, SEGMENT_SIZE           ; |
+  jl        collect_initial_primes_loop ; | if (p < SEGMENT_SIZE) collect_initial_prime_loop
 
 exit:
   pop       rsp                     ; Fix up stack before returning
@@ -70,7 +92,7 @@ print_r12_loop:
   sub       rbx, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
   dec       rdi                     ; buf--
   mov       [rdi], bl               ; *buf = b (add char to buffer)
-  mov       rbx, rdx
+  mov       rbx, rdx                ; b = d (b = b'/10)
   test      rdx, rdx                ; if d != 0: continue
   jnz       print_r12_loop
 print_r12_finish:
@@ -88,5 +110,5 @@ print_buffer_end:
 
 section .bss
 
-prime_array:                        ; prime_array has MAX_P+1 elements
+candidate_array:
   resb ARRAY_SIZE

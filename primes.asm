@@ -64,59 +64,69 @@ initialize:
   mov       rdi, 2
   call      print_u64
   mov       r12, 1                  ; p = 1
-  lea       r13, [rel candidate_array]
+  xor       r15, r15                ; n = 0
+  lea       r11, [rel initial_primes]
 
-; Set the candidate array back to all 1s
-reset_candidate_array
-; Find primes in initial segment.
+; Set the candidate array to all 1s (except for 1).
+  lea       r13, [rel candidate_array]
+  reset_candidate_array
   mov       [r13], byte 0           ; candidate_array[0] = 0 (i.e. 1 is not a prime)
+; Find primes in initial segment.
   mov       r14, 0                  ; x = 0
 
 ; Find the next prime to clear in the initial segment.
-find_next_p:
+collect_initial_primes:
   inc       r14                     ; x++
   add       r12, 2                  ; p += 2
   cmp       [r13+r14], byte 0
-  je        find_next_p             ; if (candidate_array[x] == 0) find_next_p
+  je        collect_initial_primes  ; if (candidate_array[x] == 0) collect_initial_primes
 
   ; Calculate a = p*p. This is the first candidate we want to start clearing,
   ; as all the previous candidates have been cleared already.
   mov       rax, r12                ; a = p
   mul       rax                     ; a = a*a
-  ; If p*p is past the end of the array, we found all the primes in the segment.
+  ; If p*p is past the end of the array, we have marked all the primes in the segment.
+  ; So we can just directly collect the rest.
   cmp       rax, SEGMENT_SIZE
-  jge       collect_initial_primes  ; | if (a >= ARRAY_SIZE) collect_initial_primes
+  jge       collect_large_initial_primes  ; | if (a >= ARRAY_SIZE) collect_large_initial_primes
   ; Shift a to account for the fact that the array only contains odd numbers.
   shr       rax, 1                  ; a = a/2 = (p*p)/2
+  mov       rcx, r12                ; c = p
 
 ; Clear rax+k*r12 from the candidate_array at r13.
 %macro clear_prime_multiples 1
 clear_prime_multiples_%1:
-  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) goto %1
-  jge       %1
+  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) goto done
+  jge       clear_prime_multiples_%1#_done
   mov       [r13+rax], byte 0       ; candidate_array[a] = 0
   add       rax, r12                ; a += p
+  add       ecx, 2                  ; c += 2
   jmp       clear_prime_multiples_%1
+clear_prime_multiples_%1#_done:
 %endmacro
 
-clear_prime_multiples find_next_p
+  clear_prime_multiples initial_primes
 
-; Collect the primes in the initial segment.
-collect_initial_primes:
-  xor       r14, r14                ; x = 0
-  xor       r15, r15                ; n = 0
-  lea       r11, [rel initial_primes]
-collect_initial_primes_loop:
+  mov       [r11+r15*8], r12d       ; |
+  mov       [r11+r15*8+4], ecx      ; |
+  inc       r15                     ; | initial_primes[n++] = (p, c)
+  jmp       collect_initial_primes
+
+; Collect the rest of the primes in the initial segment.
+collect_large_initial_primes:
+  dec       r14
+collect_large_initial_primes_loop:
   inc       r14                     ; |
   cmp       r14, ARRAY_SIZE         ; |
   jge       all_segments            ; | if (++x >= ARRAY_SIZE) goto all_segments
   cmp       [r13+r14], byte 0
-  je        collect_initial_primes_loop ; | if (candidate_array[x] == 0) collect_initial_primes_loop
-collect_initial_primes_found:
+  je        collect_large_initial_primes_loop ; | if (candidate_array[x] == 0) collect_large_initial_primes_loop
+collect_large_initial_primes_found:
   lea       r12, [r14*2+1]          ; p = x*2 + 1
-  mov       [r11+r15*4], r12d        ; initial_primes[n] = p
-  inc       r15                     ; n++
-  jmp collect_initial_primes_loop
+  mov       [r11+r15*8], r12d       ; |
+  mov       [r11+r15*8+4], r12d     ; |
+  inc       r15                     ; | initial_primes[n++] = (p, p)
+  jmp       collect_large_initial_primes_loop
 
 ; Now that we've found the initial primes, iterate over all segments find the
 ; rest.
@@ -159,23 +169,23 @@ handle_segment_loop:
   cmp       r14, r15
   jge       all_segments_loop       ; if (x >= n) all_segments_loop
   lea       r11, [rel initial_primes]
-  mov       r12d, [r11+r14*4]        ; p = initial_primes[x]
+  mov       r12d, [r11+r14*8]       ; |
+  mov       eax, [r11+r14*8+4]      ; | (p, a) = initial_primes[x]
+  mov       ecx, eax
   inc       r14                     ; x++
-
-  ; Find the first ODD multiple of p in the current segment.
-  ; Note that we only need to find the offset into the segment.
-  mov       rax, rbx                ; |
-  xor       rdx, rdx                ; |
-  idiv      r12                     ; | d = segment_start%p, a = segment_start/p
-  and       al, 1                   ; |
-  mov       cl, al                  ; | c == 1 if a is an odd multiple
-  mov       rax, r12                ; |
-  shl       rax, cl                 ; | a = c ? p*2 : p
-  sub       rax, rdx                ; a -= (SEGMENT_SIZE*b)%p
+  ; Find the next multiple for sieving
+  mul       r12                     ; |
+  sub       rax, rbx                ; | a = a*p - segment_start
+  ; If it is too large for the segment, then so are all the following primes.
+  ; So finish this segment.
+  cmp       rax, SEGMENT_SIZE
+  jge       handle_segment_loop     ; TODO: Figure out how to exit early
   ; Half the offset to get to the offset into the array (as the array skips even numbers).
   shr       rax, 1
 
-clear_prime_multiples handle_segment_loop
+  clear_prime_multiples all_segments
+  mov       [r11+r14*8-4], ecx
+  jmp       handle_segment_loop
 
 exit:
   pop       rsp                     ; Fix up stack before returning
@@ -184,6 +194,11 @@ exit:
 
 ; Print out the number at rdi.
 print_u64:
+  ; Save a bunch of callee saved registers to make debugging easier.
+  push      r11
+  push      r12
+  push      rax
+  push      rcx
   mov       r12, rdi
   lea       rdi, [rel print_buffer] ; buf = print_buffer
   itoa      print_u64_itoa, r12, rdi
@@ -192,6 +207,10 @@ print_u64:
   push      rsp                     ; Required for alignment.
   call _puts
   pop       rsp
+  pop       rcx
+  pop       rax
+  pop       r12
+  pop       r11
   ret
 
 print_sep:
@@ -214,7 +233,7 @@ candidate_array:
   alignb 16
 initial_primes:
   ; TODO: Can these be packed further by storing deltas?
-  resd ARRAY_SIZE
+  resq ARRAY_SIZE
 
 print_buffer:
   ; 20 bytes is enough to store 2**64

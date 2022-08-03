@@ -1,8 +1,10 @@
 ; Run with:
 ;   nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
-SEGMENT_SIZE equ 10_000
-; SEGMENT_SIZE   equ 10
+%ifndef SIZE
+%define SIZE 10_000
+%endif
+SEGMENT_SIZE equ SIZE
 MAX_PRIME    equ SEGMENT_SIZE*SEGMENT_SIZE
 ARRAY_SIZE   equ SEGMENT_SIZE/2
 

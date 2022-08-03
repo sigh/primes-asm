@@ -36,20 +36,20 @@ NEWLINE     equ 10 ; newline ascii character
   sub       r11, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
   mov       [%3], r11b              ; *buf = b (add char to buffer)
 
-  inc       %3                      ; buf++
+  add       %3, 1                   ; buf++
   mov       r11, rdx                ; b = d (b = b'/10)
   test      rdx, rdx                ; if d != 0: continue
   jnz       %1#_loop
 
   mov       r11, %3
-  dec       r11
+  sub       r11, 1
 %1#_reverse:
   mov       al, [r10]
   mov       cl, [r11]
   mov       [r11], al
   mov       [r10], cl
-  inc r10
-  dec r11
+  add       r10, 1
+  sub       r11, 1
   cmp       r10, r11
   jl        %1#_reverse
 %endmacro
@@ -81,7 +81,7 @@ initialize:
 
 ; Find primes in initial segment.
 collect_initial_primes:
-  inc       r14                     ; x++
+  add       r14, 1                  ; x++
   add       r12, 2                  ; p += 2
   cmp       [r13+r14], byte 0
   je        collect_initial_primes  ; if (candidate_array[x] == 0) collect_initial_primes
@@ -114,15 +114,15 @@ clear_prime_multiples_%1:
 
   mov       [r11+r15*8], r12d       ; |
   mov       [r11+r15*8+4], ecx      ; |
-  inc       r15                     ; | initial_primes[n++] = (p, k)
+  add       r15, 1                  ; | initial_primes[n++] = (p, k)
   jmp       collect_initial_primes
 
 ; Collect the rest of the primes in the initial segment.
 ; These primes are too large to affect the first segment.
 collect_large_initial_primes:
-  dec       r14
+  sub       r14, 1
 collect_large_initial_primes_loop:
-  inc       r14                     ; |
+  add       r14, 1                  ; |
   cmp       r14, ARRAY_SIZE         ; |
   jge       all_segments            ; | if (++x >= ARRAY_SIZE) goto all_segments
   cmp       [r13+r14], byte 0
@@ -131,7 +131,7 @@ collect_large_initial_primes_found:
   lea       r12, [r14*2+1]          ; p = x*2 + 1
   mov       [r11+r15*8], r12d       ; |
   mov       [r11+r15*8+4], dword 0  ; |
-  inc       r15                     ; | initial_primes[n++] = (p, 0)
+  add       r15, 1                  ; | initial_primes[n++] = (p, 0)
   jmp       collect_large_initial_primes_loop
 
 ; Now that we've found the initial primes, iterate over all segments find the
@@ -151,9 +151,9 @@ print_segment_found:
   lea       r12, [rbx+r14*2+1]      ; | r12 = segment_start + x*2 + 1
   itoa      itoa_print_segment, r12, rdi
   mov       [rdi], byte NEWLINE     ; |
-  inc       rdi                     ; | *buf++ = '\n'
+  add       rdi, 1                  ; | *buf++ = '\n'
 print_segment_next:
-  inc       r14                     ; |
+  add       r14, 1                  ; |
   cmp       r14, ARRAY_SIZE         ; |
   jl        print_segment_loop      ; | if (++x < ARRAY_SIZE) print_segment_loop
 print_segment_write:
@@ -178,7 +178,7 @@ handle_segment_loop:
   mov       r12d, [r11+r14*8]       ; |
   mov       eax, [r11+r14*8+4]      ; | (p, k) = initial_primes[x]
   mov       ecx, eax                ; save k save the updated value back
-  inc       r14                     ; x++
+  add       r14, 1                  ; x++
   ; Find the next multiple for sieving
   add       eax, r12d               ; |
   mul       r12                     ; |

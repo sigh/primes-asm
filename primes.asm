@@ -18,6 +18,40 @@ NEWLINE     equ 10 ; newline ascii character
   rep       stosb                   ; Copy rcx copies of al to rdi.
 %endmacro
 
+; Convert a number to string.
+; The number is genrated backwards, then reversed.
+; itoa <loop_label> <i> <start_ptr>
+%macro itoa 3
+  ; Copy number to a temp register so that we don't change it.
+  mov       r11, %2                 ; b = i
+  ; Copy pointer to a temp register so that we can reuse it.
+  mov       r10, %3
+%1#_loop:
+  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
+  mul       r11                     ; | d:a = a * b
+  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
+  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24 (the 24 will convert the number to ascii).
+  add       rcx, rcx                ; c *= 2 (c = a*10 - 48)
+  sub       r11, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
+  mov       [%3], r11b              ; *buf = b (add char to buffer)
+  inc       %3                      ; buf++
+  mov       r11, rdx                ; b = d (b = b'/10)
+  test      rdx, rdx                ; if d != 0: continue
+  jnz       %1#_loop
+
+  mov       r11, %3
+  dec       r11
+%1#_reverse:
+  mov       al, [r10]
+  mov       cl, [r11]
+  mov       [r11], al
+  mov       [r10], cl
+  inc r10
+  dec r11
+  cmp       r10, r11
+  jl        %1#_reverse
+%endmacro
+
 global    _main
 extern    _puts
 
@@ -27,8 +61,8 @@ _main:
   push      rsp                     ; Required for alignment
 
 initialize:
-  mov       r12, 2                  ; p = 2
-  call      print_r12
+  mov       rdi, 2
+  call      print_u64
   mov       r12, 1                  ; p = 1
   lea       r13, [rel candidate_array]
 
@@ -93,17 +127,25 @@ all_segments_loop:
 ; Print the primes in the current segment.
 print_segment:
   xor       r14, r14                ; x = 0
+  lea       rdi, [rel print_buffer] ; buf = print_buffer
 print_segment_loop:
   cmp       [r13+r14], byte 0       ; |
   je        print_segment_next      ; | if (candidate_array[x] == 0) print_segment_next
 print_segment_found:
   imul      rax, rbx, SEGMENT_SIZE  ; |
   lea       r12, [rax+r14*2+1]      ; | r12 = (SEGMENT_SIZE * b) + x*2 + 1
-  call print_r12
+  itoa      itoa_print_segment, r12, rdi
+  mov       [rdi], byte NEWLINE     ; |
+  inc       rdi                     ; | *buf++ = '\n'
 print_segment_next:
   inc       r14                     ; |
   cmp       r14, ARRAY_SIZE         ; |
   jl        print_segment_loop      ; | if (++x < ARRAY_SIZE) print_segment_loop
+print_segment_write:
+  ; Overwrite the last newline with a null byte to terminate the string.
+  mov       [rdi-1], byte 0
+  lea       rdi, [rel print_buffer]
+  call _puts
 
 ; Finish up if we reached the last segment.
   inc       rbx
@@ -142,27 +184,13 @@ exit:
   xor       rax, rax                ; return 0
   ret
 
-; itoa <loop_label> <i> <back_ptr>
-%macro itoa 3
-mov         r11, %2
-%1:
-  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
-  mul       r11                     ; | d:a = a * b
-  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
-  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24 (the 24 will convert the number to ascii).
-  add       rcx, rcx                ; c *= 2 (c = a*10 - 48)
-  sub       r11, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
-  dec       %3                      ; buf--
-  mov       [%3], r11b              ; *buf = b (add char to buffer)
-  mov       r11, rdx                ; b = d (b = b'/10)
-  test      rdx, rdx                ; if d != 0: continue
-  jnz       %1
-%endmacro
-
-; Print out the number at r12.
-print_r12:
-  lea       rdi, [rel print_buffer_end] ; buf = print_buffer_end
-  itoa      print_r12_loop, r12, rdi
+; Print out the number at rdi.
+print_u64:
+  mov       r12, rdi
+  lea       rdi, [rel print_buffer] ; buf = print_buffer
+  itoa      print_u64_itoa, r12, rdi
+  mov       [rdi], byte 0
+  lea       rdi, [rel print_buffer]
   push      rsp                     ; Required for alignment.
   call _puts
   pop       rsp
@@ -177,10 +205,6 @@ print_sep:
 
 section   .data
 
-print_buffer:
-  times 20 db 0                     ; Enough space to store 2**64
-print_buffer_end:
-  db 0
 sep:
   db "----", 0
 
@@ -193,3 +217,7 @@ candidate_array:
 initial_primes:
   ; TODO: Can these be packed further by storing deltas?
   resd ARRAY_SIZE
+
+print_buffer:
+  ; 20 bytes is enough to store 2**64
+  resb ARRAY_SIZE*20

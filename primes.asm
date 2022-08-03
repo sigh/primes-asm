@@ -63,18 +63,18 @@ _main:
 initialize:
   mov       rdi, 2
   call      print_u64
+
   mov       r12, 1                  ; p = 1
   xor       r15, r15                ; n = 0
+  xor       r14, r14                ; x = 0
   lea       r11, [rel initial_primes]
 
 ; Set the candidate array to all 1s (except for 1).
   lea       r13, [rel candidate_array]
   reset_candidate_array
   mov       [r13], byte 0           ; candidate_array[0] = 0 (i.e. 1 is not a prime)
-; Find primes in initial segment.
-  mov       r14, 0                  ; x = 0
 
-; Find the next prime to clear in the initial segment.
+; Find primes in initial segment.
 collect_initial_primes:
   inc       r14                     ; x++
   add       r12, 2                  ; p += 2
@@ -91,28 +91,29 @@ collect_initial_primes:
   jge       collect_large_initial_primes  ; | if (a >= ARRAY_SIZE) collect_large_initial_primes
   ; Shift a to account for the fact that the array only contains odd numbers.
   shr       rax, 1                  ; a = a/2 = (p*p)/2
-  mov       rcx, r12                ; c = p
+  xor       ecx, ecx                ; k = 0
 
-; Clear rax+k*r12 from the candidate_array at r13.
+; Clear values (k+p)*p where k is even.
+; This clears entries a+m*p from the candidate_array at r13.
+; Where a = rax, k = ecx, p = r12
 %macro clear_prime_multiples 1
 clear_prime_multiples_%1:
-  cmp       rax, ARRAY_SIZE         ; if (a >= ARRAY_SIZE) goto done
-  jge       clear_prime_multiples_%1#_done
   mov       [r13+rax], byte 0       ; candidate_array[a] = 0
   add       rax, r12                ; a += p
-  add       ecx, 2                  ; c += 2
-  jmp       clear_prime_multiples_%1
-clear_prime_multiples_%1#_done:
+  add       ecx, 2                  ; k += 2
+  cmp       rax, ARRAY_SIZE         ; if (a < ARRAY_SIZE) continue
+  jl        clear_prime_multiples_%1
 %endmacro
 
   clear_prime_multiples initial_primes
 
   mov       [r11+r15*8], r12d       ; |
   mov       [r11+r15*8+4], ecx      ; |
-  inc       r15                     ; | initial_primes[n++] = (p, c)
+  inc       r15                     ; | initial_primes[n++] = (p, k)
   jmp       collect_initial_primes
 
 ; Collect the rest of the primes in the initial segment.
+; These primes are too large to affect the first segment.
 collect_large_initial_primes:
   dec       r14
 collect_large_initial_primes_loop:
@@ -124,8 +125,8 @@ collect_large_initial_primes_loop:
 collect_large_initial_primes_found:
   lea       r12, [r14*2+1]          ; p = x*2 + 1
   mov       [r11+r15*8], r12d       ; |
-  mov       [r11+r15*8+4], r12d     ; |
-  inc       r15                     ; | initial_primes[n++] = (p, p)
+  mov       [r11+r15*8+4], dword 0  ; |
+  inc       r15                     ; | initial_primes[n++] = (p, 0)
   jmp       collect_large_initial_primes_loop
 
 ; Now that we've found the initial primes, iterate over all segments find the
@@ -170,21 +171,28 @@ handle_segment_loop:
   jge       all_segments_loop       ; if (x >= n) all_segments_loop
   lea       r11, [rel initial_primes]
   mov       r12d, [r11+r14*8]       ; |
-  mov       eax, [r11+r14*8+4]      ; | (p, a) = initial_primes[x]
-  mov       ecx, eax
+  mov       eax, [r11+r14*8+4]      ; | (p, k) = initial_primes[x]
+  mov       ecx, eax                ; save k save the updated value back
   inc       r14                     ; x++
   ; Find the next multiple for sieving
+  add       eax, r12d               ; |
   mul       r12                     ; |
-  sub       rax, rbx                ; | a = a*p - segment_start
-  ; If it is too large for the segment, then so are all the following primes.
-  ; So finish this segment.
+  sub       rax, rbx                ; | a = (k+p)*p - segment_start
+  ; Check if this multiple is too large for the segment.
   cmp       rax, SEGMENT_SIZE
-  jge       handle_segment_loop     ; TODO: Figure out how to exit early
+  jge       handle_segment_early_exit
   ; Half the offset to get to the offset into the array (as the array skips even numbers).
   shr       rax, 1
 
   clear_prime_multiples all_segments
-  mov       [r11+r14*8-4], ecx
+  mov       [r11+r14*8-4], ecx      ; Save the updated value of k
+  jmp       handle_segment_loop
+handle_segment_early_exit:
+  ; Check if we can exit early.
+  ; If the next multiple `k` is 0, then it means that it's too early for this
+  ; prime to have any effect. This means we can skip over all future primes also.
+  cmp       [r11+r14*8-4], dword 0
+  je        all_segments_loop
   jmp       handle_segment_loop
 
 exit:
@@ -233,6 +241,9 @@ candidate_array:
   alignb 16
 initial_primes:
   ; TODO: Can these be packed further by storing deltas?
+  ; Store pairs of 32-bit uints (p, k) where:
+  ;  - p is the prime
+  ;  - (k+p)*p is the next candidate to be removed
   resq ARRAY_SIZE
 
 print_buffer:

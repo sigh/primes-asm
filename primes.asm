@@ -1,8 +1,8 @@
 ; Run with:
 ;   nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
-; SEGMENT_SIZE equ 10_000
-SEGMENT_SIZE   equ 10
+SEGMENT_SIZE equ 10_000
+; SEGMENT_SIZE   equ 10
 MAX_PRIME    equ SEGMENT_SIZE*SEGMENT_SIZE
 ARRAY_SIZE   equ SEGMENT_SIZE/2
 
@@ -78,7 +78,7 @@ collect_initial_primes_loop:
   je        collect_initial_primes_loop ; | if (candidate_array[x] == 0) collect_initial_primes_loop
 collect_initial_primes_found:
   lea       r12, [r14*2+1]          ; p = x*2 + 1
-  mov       [r11+r15*8], r12        ; initial_primes[n] = p
+  mov       [r11+r15*4], r12d        ; initial_primes[n] = p
   inc       r15                     ; n++
   jmp collect_initial_primes_loop
 
@@ -116,7 +116,7 @@ handle_segment_loop:
   cmp       r14, r15
   jge       all_segments_loop       ; if (x >= n) all_segments_loop
   lea       r11, [rel initial_primes]
-  mov       r12, [r11+r14*8]        ; p = initial_primes[x]
+  mov       r12d, [r11+r14*4]        ; p = initial_primes[x]
   inc       r14                     ; x++
 
   ; Find the first ODD multiple of p in the current segment.
@@ -185,5 +185,5 @@ candidate_array:
 
   alignb 16
 initial_primes:
-  ; TODO: Can these just be 32 bit?
-  resq ARRAY_SIZE
+  ; TODO: Can these be packed further by storing deltas?
+  resd ARRAY_SIZE

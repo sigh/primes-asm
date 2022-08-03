@@ -61,15 +61,18 @@ _main:
   push      rsp                     ; Required for alignment
 
 initialize:
-  mov       rdi, 2
-  call      print_u64
+  ; Write out the first prime directly, as we elide all even numbers in the rest
+  ; of the program.
+  lea       rdi, [rel prelude]
+  call      _puts
 
+  ; Initialize variables.
   mov       r12, 1                  ; p = 1
   xor       r15, r15                ; n = 0
   xor       r14, r14                ; x = 0
   lea       r11, [rel initial_primes]
 
-; Set the candidate array to all 1s (except for 1).
+  ; Set the candidate array to all 1s (except for 1).
   lea       r13, [rel candidate_array]
   reset_candidate_array
   mov       [r13], byte 0           ; candidate_array[0] = 0 (i.e. 1 is not a prime)
@@ -200,21 +203,25 @@ exit:
   xor       rax, rax                ; return 0
   ret
 
-; Print out the number at rdi.
-print_u64:
-  ; Save a bunch of callee saved registers to make debugging easier.
+; Print out the number at rdi for debugging.
+; Save a bunch of callee saved registers for convinience.
+debug_u64:
+  ; Push the things we want to save.
   push      r11
   push      r12
   push      rax
   push      rcx
+  ; Convert the number to a string.
   mov       r12, rdi
-  lea       rdi, [rel print_buffer] ; buf = print_buffer
+  lea       rdi, [rel print_buffer]
   itoa      print_u64_itoa, r12, rdi
   mov       [rdi], byte 0
   lea       rdi, [rel print_buffer]
+  ; Write.
   push      rsp                     ; Required for alignment.
   call _puts
   pop       rsp
+  ; Pop everything.
   pop       rcx
   pop       rax
   pop       r12
@@ -232,6 +239,8 @@ section   .data
 
 sep:
   db "----", 0
+prelude:
+  db "2", 0
 
 section .bss
 

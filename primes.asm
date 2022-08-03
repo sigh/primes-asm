@@ -142,23 +142,27 @@ exit:
   xor       rax, rax                ; return 0
   ret
 
-; Print out the number at r12.
-print_r12:
-  lea       rdi, [rel print_buffer_end] ; buf = print_buffer_end
-  mov       r11, r12                ; b = p
-print_r12_loop:
+; itoa <loop_label> <i> <back_ptr>
+%macro itoa 3
+mov         r11, %2
+%1:
   mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
   mul       r11                     ; | d:a = a * b
   shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
   lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24 (the 24 will convert the number to ascii).
   add       rcx, rcx                ; c *= 2 (c = a*10 - 48)
   sub       r11, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
-  dec       rdi                     ; buf--
-  mov       [rdi], r11b             ; *buf = b (add char to buffer)
+  dec       %3                      ; buf--
+  mov       [%3], r11b              ; *buf = b (add char to buffer)
   mov       r11, rdx                ; b = d (b = b'/10)
   test      rdx, rdx                ; if d != 0: continue
-  jnz       print_r12_loop
-print_r12_finish:
+  jnz       %1
+%endmacro
+
+; Print out the number at r12.
+print_r12:
+  lea       rdi, [rel print_buffer_end] ; buf = print_buffer_end
+  itoa      print_r12_loop, r12, rdi
   push      rsp                     ; Required for alignment.
   call _puts
   pop       rsp

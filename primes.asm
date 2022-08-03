@@ -30,10 +30,12 @@ NEWLINE     equ 10 ; newline ascii character
   mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
   mul       r11                     ; | d:a = a * b
   shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
-  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24 (the 24 will convert the number to ascii).
-  add       rcx, rcx                ; c *= 2 (c = a*10 - 48)
+  ; Convert the last digit of r11 to a character (note: '0' = 48).
+  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24
+  shl       rcx, 1                  ; c *= 2 (c = a*10 - 48)
   sub       r11, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
   mov       [%3], r11b              ; *buf = b (add char to buffer)
+
   inc       %3                      ; buf++
   mov       r11, rdx                ; b = d (b = b'/10)
   test      rdx, rdx                ; if d != 0: continue

@@ -4,9 +4,9 @@
 %ifndef SIZE
 %define SIZE 10_000
 %endif
-SEGMENT_SIZE equ SIZE
-MAX_PRIME    equ SEGMENT_SIZE*SEGMENT_SIZE
-ARRAY_SIZE   equ SEGMENT_SIZE/2
+SEGMENT_SIZE  equ SIZE
+SEARCH_LIMIT  equ SEGMENT_SIZE*SEGMENT_SIZE
+ARRAY_SIZE    equ SEGMENT_SIZE/2
 
 NEWLINE     equ 10 ; newline ascii character
 
@@ -121,7 +121,7 @@ collect_initial_primes_found:
 ; Now that we've found the initial primes, iterate over all segments find the
 ; rest.
 all_segments:
-  xor       rbx, rbx                ; b = 0 (segment number).
+  xor       rbx, rbx                ; segment_start = 0
 all_segments_loop:
 
 ; Print the primes in the current segment.
@@ -132,8 +132,7 @@ print_segment_loop:
   cmp       [r13+r14], byte 0       ; |
   je        print_segment_next      ; | if (candidate_array[x] == 0) print_segment_next
 print_segment_found:
-  imul      rax, rbx, SEGMENT_SIZE  ; |
-  lea       r12, [rax+r14*2+1]      ; | r12 = (SEGMENT_SIZE * b) + x*2 + 1
+  lea       r12, [rbx+r14*2+1]      ; | r12 = segment_start + x*2 + 1
   itoa      itoa_print_segment, r12, rdi
   mov       [rdi], byte NEWLINE     ; |
   inc       rdi                     ; | *buf++ = '\n'
@@ -147,9 +146,9 @@ print_segment_write:
   lea       rdi, [rel print_buffer]
   call _puts
 
-; Finish up if we reached the last segment.
-  inc       rbx
-  cmp       rbx, SEGMENT_SIZE
+; Finish up if we have reached our max.
+  add       rbx, SEGMENT_SIZE
+  cmp       rbx, SEARCH_LIMIT
   jge       exit
 
 ; Find the primes in the next segment by sieving out all of the initial primes.
@@ -165,10 +164,9 @@ handle_segment_loop:
 
   ; Find the first ODD multiple of p in the current segment.
   ; Note that we only need to find the offset into the segment.
-  mov       rax, SEGMENT_SIZE       ; |
-  mul       rbx                     ; | a = SEGMENT_SIZE * b
-  xor       rdx, rdx
-  idiv      r12                     ; d = a%p, a = a/p
+  mov       rax, rbx                ; |
+  xor       rdx, rdx                ; |
+  idiv      r12                     ; | d = segment_start%p, a = segment_start/p
   and       al, 1                   ; |
   mov       cl, al                  ; | c == 1 if a is an odd multiple
   mov       rax, r12                ; |

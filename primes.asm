@@ -140,43 +140,19 @@ collect_large_initial_primes_found:
 ; rest.
 all_segments:
   xor       rbx, rbx                ; segment_start = 0
+  ; We want to use print_segment for the first segment as well.
+  jmp       print_segment
+
 all_segments_loop:
-
-; Print the primes in the current segment.
-print_segment:
-  xor       r14, r14                ; x = 0
-  lea       rdi, [rel print_buffer] ; buf = print_buffer
-print_segment_loop:
-  cmp       [r13+r14-ARRAY_SIZE], byte 0       ; |
-  je        print_segment_next      ; | if (candidate_array[x] == 0) print_segment_next
-print_segment_found:
-  lea       r12, [rbx+r14*2+1]      ; | r12 = segment_start + x*2 + 1
-  itoa      itoa_print_segment, r12, rdi
-  mov       [rdi], byte NEWLINE     ; |
-  add       rdi, 1                  ; | *buf++ = '\n'
-print_segment_next:
-  add       r14, 1                  ; |
-  cmp       r14, ARRAY_SIZE         ; |
-  jl        print_segment_loop      ; | if (++x < ARRAY_SIZE) print_segment_loop
-print_segment_write:
-  ; Overwrite the last newline with a null byte to terminate the string.
-  mov       [rdi-1], byte 0
-  lea       rdi, [rel print_buffer]
-  call _puts
-
-; Finish up if we have reached our max.
-  add       rbx, SEGMENT_SIZE
-  cmp       rbx, SEARCH_LIMIT
-  jge       exit
 
 ; Find the primes in the next segment by sieving out all of the initial primes.
 handle_segment:
   reset_candidate_array
   xor       r14, r14                ; x = 0
+  lea       r11, [rel initial_primes]
 handle_segment_loop:
   cmp       r14, r15
-  jge       all_segments_loop       ; if (x >= n) all_segments_loop
-  lea       r11, [rel initial_primes]
+  jge       print_segment           ; if (x >= n) print_segment
   mov       r12d, [r11+r14*8]       ; |
   mov       eax, [r11+r14*8+4]      ; | (p, k) = initial_primes[x]
   mov       ecx, eax                ; save k save the updated value back
@@ -200,8 +176,35 @@ handle_segment_early_exit:
   ; If the next multiple `k` is 0, then it means that it's too early for this
   ; prime to have any effect. This means we can skip over all future primes also.
   cmp       [r11+r14*8-4], dword 0
-  je        all_segments_loop
+  je        print_segment
   jmp       handle_segment_loop
+
+; Print the primes in the current segment.
+print_segment:
+  xor       r14, r14                ; x = 0
+  lea       rdi, [rel print_buffer] ; buf = print_buffer
+print_segment_loop:
+  cmp       [r13+r14-ARRAY_SIZE], byte 0       ; |
+  je        print_segment_next      ; | if (candidate_array[x] == 0) print_segment_next
+print_segment_found:
+  lea       r12, [rbx+r14*2+1]      ; | r12 = segment_start + x*2 + 1
+  itoa      itoa_print_segment, r12, rdi
+  mov       [rdi], byte NEWLINE     ; |
+  add       rdi, 1                  ; | *buf++ = '\n'
+print_segment_next:
+  add       r14, 1                  ; |
+  cmp       r14, ARRAY_SIZE         ; |
+  jl        print_segment_loop      ; | if (++x < ARRAY_SIZE) print_segment_loop
+print_segment_write:
+  ; Overwrite the last newline with a null byte to terminate the string.
+  mov       [rdi-1], byte 0
+  lea       rdi, [rel print_buffer]
+  call _puts
+
+; Continue looping until we reach the search limit.
+  add       rbx, SEGMENT_SIZE
+  cmp       rbx, SEARCH_LIMIT
+  jl        all_segments_loop
 
 exit:
   pop       rsp                     ; Fix up stack before returning

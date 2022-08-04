@@ -80,6 +80,7 @@ initialize:
   lea       r13, [rel candidate_array_end]
   reset_candidate_array
   mov       [r13-ARRAY_SIZE], byte 0 ; candidate_array[0] = 0 (i.e. 1 is not a prime)
+  mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
 
 ; Find primes in initial segment.
 collect_initial_primes:
@@ -124,12 +125,13 @@ clear_prime_multiples_%1:
 collect_large_initial_primes:
   sub       r14, 1
 collect_large_initial_primes_loop:
-  add       r14, 1                  ; |
-  cmp       r14, ARRAY_SIZE         ; |
-  jge       all_segments            ; | if (++x >= ARRAY_SIZE) goto all_segments
+  ; NOTE: Because we have a sentinal element, we don't need to check the loop bounds here.
+  add       r14, 1
   cmp       [r13+r14-ARRAY_SIZE], byte 0
-  je        collect_large_initial_primes_loop ; | if (candidate_array[x] == 0) collect_large_initial_primes_loop
+  je        collect_large_initial_primes_loop ; if (candidate_array[x] == 0) collect_large_initial_primes_loop
 collect_large_initial_primes_found:
+  cmp       r14, ARRAY_SIZE         ; |
+  jge       all_segments            ; | if (x >= ARRAY_SIZE) goto all_segments
   lea       r12, [r14*2+1]          ; p = x*2 + 1
   mov       [r11+r15*8], r12d       ; |
   mov       [r11+r15*8+4], dword 0  ; |
@@ -184,17 +186,19 @@ print_segment:
   xor       r14, r14                ; x = 0
   lea       rdi, [rel print_buffer] ; buf = print_buffer
 print_segment_loop:
-  cmp       [r13+r14-ARRAY_SIZE], byte 0       ; |
-  je        print_segment_next      ; | if (candidate_array[x] == 0) print_segment_next
+  ; Keep looping until candidate_array[x-1] != 0
+  ; Note: candidate_array has a sentinal, so we don't need to check the loop condition.
+  add       r14, 1
+  cmp       [r13+r14-1-ARRAY_SIZE], byte 0
+  je        print_segment_loop
 print_segment_found:
-  lea       r12, [rbx+r14*2+1]      ; | r12 = segment_start + x*2 + 1
+  cmp       r14, ARRAY_SIZE         ; |
+  jg        print_segment_write     ; | if (x > ARRAY_SIZE) print_segment_write
+  lea       r12, [rbx+r14*2-1]      ; r12 = segment_start + x*2 - 1
   itoa      itoa_print_segment, r12, rdi
   mov       [rdi], byte NEWLINE     ; |
   add       rdi, 1                  ; | *buf++ = '\n'
-print_segment_next:
-  add       r14, 1                  ; |
-  cmp       r14, ARRAY_SIZE         ; |
-  jl        print_segment_loop      ; | if (++x < ARRAY_SIZE) print_segment_loop
+  jmp       print_segment_loop
 print_segment_write:
   ; Overwrite the last newline with a null byte to terminate the string.
   mov       [rdi-1], byte 0
@@ -255,6 +259,7 @@ section .bss
 candidate_array:
   resb ARRAY_SIZE
 candidate_array_end:
+  resq 1  ; buffer
 
   alignb 16
 initial_primes:

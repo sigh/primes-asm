@@ -75,15 +75,17 @@ initialize:
   lea       r11, [rel initial_primes]
 
   ; Set the candidate array to all 1s (except for 1).
-  lea       r13, [rel candidate_array]
+  ; r13 refers to the end of the array so that loop termination can just check
+  ; against 0 instead of doing an explicit comparision.
+  lea       r13, [rel candidate_array_end]
   reset_candidate_array
-  mov       [r13], byte 0           ; candidate_array[0] = 0 (i.e. 1 is not a prime)
+  mov       [r13-ARRAY_SIZE], byte 0 ; candidate_array[0] = 0 (i.e. 1 is not a prime)
 
 ; Find primes in initial segment.
 collect_initial_primes:
   add       r14, 1                  ; x++
   add       r12, 2                  ; p += 2
-  cmp       [r13+r14], byte 0
+  cmp       [r13+r14-ARRAY_SIZE], byte 0
   je        collect_initial_primes  ; if (candidate_array[x] == 0) collect_initial_primes
 
   ; Calculate a = p*p. This is the first candidate we want to start clearing,
@@ -96,6 +98,7 @@ collect_initial_primes:
   jge       collect_large_initial_primes  ; | if (a >= ARRAY_SIZE) collect_large_initial_primes
   ; Shift a to account for the fact that the array only contains odd numbers.
   shr       rax, 1                  ; a = a/2 = (p*p)/2
+  sub       rax, ARRAY_SIZE
   xor       ecx, ecx                ; k = 0
 
 ; Clear values (k+p)*p where k is even.
@@ -104,10 +107,9 @@ collect_initial_primes:
 %macro clear_prime_multiples 1
 clear_prime_multiples_%1:
   mov       [r13+rax], byte 0       ; candidate_array[a] = 0
-  add       rax, r12                ; a += p
   add       ecx, 2                  ; k += 2
-  cmp       rax, ARRAY_SIZE         ; if (a < ARRAY_SIZE) continue
-  jl        clear_prime_multiples_%1
+  add       rax, r12                ; a += p
+  jl        clear_prime_multiples_%1 ; if (a < 0) continue
 %endmacro
 
   clear_prime_multiples initial_primes
@@ -125,7 +127,7 @@ collect_large_initial_primes_loop:
   add       r14, 1                  ; |
   cmp       r14, ARRAY_SIZE         ; |
   jge       all_segments            ; | if (++x >= ARRAY_SIZE) goto all_segments
-  cmp       [r13+r14], byte 0
+  cmp       [r13+r14-ARRAY_SIZE], byte 0
   je        collect_large_initial_primes_loop ; | if (candidate_array[x] == 0) collect_large_initial_primes_loop
 collect_large_initial_primes_found:
   lea       r12, [r14*2+1]          ; p = x*2 + 1
@@ -145,7 +147,7 @@ print_segment:
   xor       r14, r14                ; x = 0
   lea       rdi, [rel print_buffer] ; buf = print_buffer
 print_segment_loop:
-  cmp       [r13+r14], byte 0       ; |
+  cmp       [r13+r14-ARRAY_SIZE], byte 0       ; |
   je        print_segment_next      ; | if (candidate_array[x] == 0) print_segment_next
 print_segment_found:
   lea       r12, [rbx+r14*2+1]      ; | r12 = segment_start + x*2 + 1
@@ -188,6 +190,7 @@ handle_segment_loop:
   jge       handle_segment_early_exit
   ; Half the offset to get to the offset into the array (as the array skips even numbers).
   shr       rax, 1
+  sub       rax, ARRAY_SIZE
 
   clear_prime_multiples all_segments
   mov       [r11+r14*8-4], ecx      ; Save the updated value of k
@@ -248,6 +251,7 @@ section .bss
 
 candidate_array:
   resb ARRAY_SIZE
+candidate_array_end:
 
   alignb 16
 initial_primes:

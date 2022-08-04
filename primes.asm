@@ -1,14 +1,16 @@
 ; Run with:
 ;   nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
-%ifndef SIZE
-%define SIZE 10_000
+%ifndef SQRT_SIZE
+%define SQRT_SIZE 10_000
 %endif
-SEGMENT_SIZE  equ SIZE
+SEGMENT_SIZE  equ SQRT_SIZE
 SEARCH_LIMIT  equ SEGMENT_SIZE*SEGMENT_SIZE
 ARRAY_SIZE    equ SEGMENT_SIZE/2
 
-NEWLINE     equ 10 ; newline ascii character
+LOCAL_VAR_BYTES     equ 16
+SEARCH_LIMIT_OFFSET equ 8
+NEWLINE             equ 10 ; newline ascii character
 
 ; Set the candidate array back to all 1s
 %macro reset_candidate_array 0
@@ -61,6 +63,7 @@ section   .text
 
 _main:
   push      rsp                     ; Required for alignment
+  sub       rsp, LOCAL_VAR_BYTES
 
 initialize:
   ; Write out the first prime directly, as we elide all even numbers in the rest
@@ -73,6 +76,10 @@ initialize:
   xor       r15, r15                ; n = 0
   xor       r14, r14                ; x = 0
   lea       r11, [rel initial_primes]
+
+  ; Set up the search limit
+  mov       rax, SEARCH_LIMIT
+  mov       [rsp+SEARCH_LIMIT_OFFSET], rax
 
   ; Set the candidate array to all 1s (except for 1).
   ; r13 refers to the end of the array so that loop termination can just check
@@ -207,10 +214,11 @@ print_segment_write:
 
 ; Continue looping until we reach the search limit.
   add       rbx, SEGMENT_SIZE
-  cmp       rbx, SEARCH_LIMIT
+  cmp       rbx, [rsp+SEARCH_LIMIT_OFFSET]
   jl        all_segments_loop
 
 exit:
+  add       rsp, LOCAL_VAR_BYTES
   pop       rsp                     ; Fix up stack before returning
   xor       rax, rax                ; return 0
   ret

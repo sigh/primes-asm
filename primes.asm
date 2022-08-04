@@ -10,7 +10,6 @@ ARRAY_SIZE    equ SEGMENT_SIZE/2
 
 LOCAL_VAR_BYTES     equ 16
 SEARCH_LIMIT_OFFSET equ 8
-NEWLINE             equ 10 ; newline ascii character
 
 ; Set the candidate array back to all 1s
 %macro reset_candidate_array 0
@@ -28,21 +27,31 @@ NEWLINE             equ 10 ; newline ascii character
   mov       r11, %2                 ; b = i
   ; Copy pointer to a temp register so that we can reuse it.
   mov       r10, %3
-%1#_loop:
+  ; The start of the loop is copied here to reduce branching.
+  ; However, this means that single digit numbers will have a zero in front.
   mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
   mul       r11                     ; | d:a = a * b
   shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
+%1#_loop:
   ; Convert the last digit of r11 to a character (note: '0' = 48).
   lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24
   shl       rcx, 1                  ; c *= 2 (c = a*10 - 48)
   sub       r11, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
   mov       [%3], r11b              ; *buf = b (add char to buffer)
-
   add       %3, 1                   ; buf++
   mov       r11, rdx                ; b = d (b = b'/10)
-  test      rdx, rdx                ; if d != 0: continue
+  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
+  mul       r11                     ; | d:a = a * b
+  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
   jnz       %1#_loop
 
+  ; Handle the final digit
+  or        r11d, '0'               ; |
+  mov       [%3], r11b              ; | *buf = b%10 + 48 (add char to buffer)
+
+  ; This can be reduced to two instructions but it hurts the runtime a lot for
+  ; some reason.
+  add       %3, 1                   ; buf++
   mov       r11, %3
   sub       r11, 1
 %1#_reverse:
@@ -150,6 +159,9 @@ collect_large_initial_primes_found:
 all_segments:
   xor       rbx, rbx                ; segment_start = 0
   ; We want to use print_segment for the first segment as well.
+  ; However, it doesn't handle single digit output so we do those manually and
+  ; cross them off the list here.
+  mov       [r13-ARRAY_SIZE], dword 0
   jmp       print_segment
 
 all_segments_loop:
@@ -203,7 +215,7 @@ print_segment_found:
   jg        print_segment_write     ; | if (x > ARRAY_SIZE) print_segment_write
   lea       r12, [rbx+r14*2-1]      ; r12 = segment_start + x*2 - 1
   itoa      itoa_print_segment, r12, rdi
-  mov       [rdi], byte NEWLINE     ; |
+  mov       [rdi], byte `\n`        ; |
   add       rdi, 1                  ; | *buf++ = '\n'
   jmp       print_segment_loop
 print_segment_write:
@@ -260,7 +272,7 @@ section   .data
 sep:
   db "----", 0
 prelude:
-  db "2", 0
+  db `2\n3\n5\n7`, 0
 
 section .bss
 

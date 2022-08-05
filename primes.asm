@@ -24,40 +24,37 @@ SEARCH_LIMIT_OFFSET equ 8
 %endmacro
 
 ; Convert a number to string.
-; The number is genrated backwards, then reversed.
-; itoa <loop_label> <i> <start_ptr>
+; The number is generated backwards, then reversed.
+; NOTE:
+;  - Prepends a 0 if the number is a single digit.
+;  - b is destroyed
+; itoa <loop_label> <b> <start_ptr>
 %macro itoa 3
-  ; Copy number to a temp register so that we don't change it.
-  mov       r11, %2                 ; b = i
   ; Copy pointer to a temp register so that we can reuse it.
   mov       r10, %3
   ; The start of the loop is copied here to reduce branching.
   ; However, this means that single digit numbers will have a zero in front.
   mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
-  mul       r11                     ; | d:a = a * b
+  mul       %2                      ; | d:a = a * b
   shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
 %1#_loop:
   ; Convert the last digit of r11 to a character (note: '0' = 48).
   lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24
   shl       rcx, 1                  ; c *= 2 (c = a*10 - 48)
-  sub       r11, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
-  mov       [%3], r11b              ; *buf = b (add char to buffer)
+  sub       %2, rcx                 ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
+  mov       [%3], %2b               ; *buf = b (add char to buffer)
   add       %3, 1                   ; buf++
-  mov       r11, rdx                ; b = d (b = b'/10)
+  mov       %2, rdx                 ; b = d (b = b'/10)
   mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
-  mul       r11                     ; | d:a = a * b
+  mul       %2                      ; | d:a = a * b
   shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
   jnz       %1#_loop
-
   ; Handle the final digit
-  or        r11d, '0'               ; |
-  mov       [%3], r11b              ; | *buf = b%10 + 48 (add char to buffer)
-
-  ; This can be reduced to two instructions but it hurts the runtime a lot for
-  ; some reason.
-  add       %3, 1                   ; buf++
+  or        %2d, '0'                ; |
+  mov       [%3], %2b               ; | *buf = b%10 + 48 (add char to buffer)
+  ; Reverse the digits
   mov       r11, %3
-  sub       r11, 1
+  add       %3, 1                   ; buf++ (make sure buf points past the data)
 %1#_reverse:
   mov       al, [r10]
   mov       cl, [r11]

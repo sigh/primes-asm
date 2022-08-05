@@ -12,8 +12,10 @@ SEGMENT_SIZE  equ SQRT_SIZE
 SEARCH_LIMIT  equ SEGMENT_SIZE*SEGMENT_SIZE
 ARRAY_SIZE    equ SEGMENT_SIZE/2
 
-LOCAL_VAR_BYTES     equ 16
+LOCAL_VAR_BYTES     equ 32
 SEARCH_LIMIT_OFFSET equ 8
+OUTPUT_LEN_OFFSET   equ 24
+NEXT_POW_OFFSET     equ 16
 
 ; Set the candidate array back to all 1s
 %macro reset_candidate_array 0
@@ -21,49 +23,6 @@ SEARCH_LIMIT_OFFSET equ 8
   mov       al, byte 1
   lea       rdi, [rel candidate_array]
   rep       stosb                   ; Copy rcx copies of al to rdi.
-%endmacro
-
-; Convert a number to string.
-; The number is generated backwards, then reversed.
-; NOTE:
-;  - Prepends a 0 if the number is a single digit.
-;  - b is destroyed
-; itoa <loop_label> <b> <start_ptr>
-%macro itoa 3
-  ; Copy pointer to a temp register so that we can reuse it.
-  mov       r10, %3
-  ; The start of the loop is copied here to reduce branching.
-  ; However, this means that single digit numbers will have a zero in front.
-  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
-  mul       %2                      ; | d:a = a * b
-  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
-%1#_loop:
-  ; Convert the last digit of r11 to a character (note: '0' = 48).
-  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24
-  shl       rcx, 1                  ; c *= 2 (c = a*10 - 48)
-  sub       %2, rcx                 ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
-  mov       [%3], %2b               ; *buf = b (add char to buffer)
-  add       %3, 1                   ; buf++
-  mov       %2, rdx                 ; b = d (b = b'/10)
-  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
-  mul       %2                      ; | d:a = a * b
-  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
-  jnz       %1#_loop
-  ; Handle the final digit
-  or        %2d, '0'                ; |
-  mov       [%3], %2b               ; | *buf = b%10 + 48 (add char to buffer)
-  ; Reverse the digits
-  mov       r11, %3
-  add       %3, 1                   ; buf++ (make sure buf points past the data)
-%1#_reverse:
-  mov       al, [r10]
-  mov       cl, [r11]
-  mov       [r11], al
-  mov       [r10], cl
-  add       r10, 1
-  sub       r11, 1
-  cmp       r10, r11
-  jl        %1#_reverse
 %endmacro
 
 ; debug <format> <value>
@@ -106,6 +65,10 @@ initialize:
   xor       r15, r15                ; n = 0
   xor       r14, r14                ; x = 0
   lea       r11, [rel initial_primes]
+  mov       rax, 1
+  mov       [rsp+OUTPUT_LEN_OFFSET], rax
+  mov       rax, 10
+  mov       [rsp+NEXT_POW_OFFSET], rax
 
   ; Set up the search limit
   mov       rax, SEARCH_LIMIT/2
@@ -216,6 +179,8 @@ print_segment:
   xor       r14, r14                ; x = 0
   lea       rsi, [rel print_buffer] ; buf = print_buffer
   lea       rdi, [rel print_buffer]
+  mov       r8, [rsp+OUTPUT_LEN_OFFSET]
+  mov       r9, [rsp+NEXT_POW_OFFSET]
 print_segment_loop:
   ; Keep looping until candidate_array[x-1] != 0
   ; Note: candidate_array has a sentinal, so we don't need to check the loop condition.
@@ -226,12 +191,43 @@ print_segment_found:
   cmp       r14, ARRAY_SIZE         ; |
   jg        print_segment_write     ; | if (x > ARRAY_SIZE) print_segment_write
   lea       r12, [rbx+r14]          ; |
-  lea       r12, [r12+r12-1]        ; | r12 = (segment_start + x)*2 + 1
-  itoa      itoa_print_segment, r12, rsi
-  mov       [rsi], byte `\n`        ; |
-  add       rsi, 1                  ; | *buf++ = '\n'
+  lea       r12, [r12+r12-1]        ; | p = (segment_start + x)*2 + 1
+  cmp       r12, r9                 ; | if (p >= next_pow) {
+  jl        print_segment_itoa      ; |
+  inc       r8                      ; |   output_len++
+  imul      r9, 10                  ; |   next_pow *= 10
+  ; Convert a number to string.     ; | }
+  ; Here we refer to p as b, as we destroy while outputting.
+print_segment_itoa:
+  lea       rsi, [rsi+r8-1]         ; | buf += output_len - 1
+  ; The start of the loop is copied here to reduce branching.
+  ; However, this means that single digit numbers will have a zero in front.
+  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
+  mul       r12                     ; | d:a = a * b
+  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
+print_segment_itoa_loop:
+  ; Convert the last digit of b (r12) to a character (note: '0' = 48).
+  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24
+  shl       rcx, 1                  ; c *= 2 (c = a*10 - 48)
+  sub       r12, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
+  mov       [rsi], r12b             ; *buf = b (add char to buffer)
+  sub       rsi, 1                  ; buf--
+  mov       r12, rdx                ; b = d (b = b'/10)
+  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
+  mul       r12                     ; | d:a = a * b
+  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
+  jnz       print_segment_itoa_loop
+  ; Handle the final digit
+  or        r12d, '0'               ; |
+  mov       [rsi], r12b             ; | *buf = b%10 + 48 (add char to buffer)
+  ; Finalize
+  mov       [rsi+r8], byte `\n`     ; | *(buf+output_len) = '\n'
+  lea       rsi, [rsi+r8+1]         ; | buf += output_len + 1
   jmp       print_segment_loop
 print_segment_write:
+  ; Restore local variables.
+  mov       [rsp+OUTPUT_LEN_OFFSET], r8
+  mov       [rsp+NEXT_POW_OFFSET], r9
   ; If we have nothing to write, don't call _puts because it adds a newline.
   cmp       rsi, rdi
   je        print_segment_skip
@@ -259,7 +255,7 @@ prelude:
 
 ; Format strings for debugging.
 format_u64:
-  db `> %d\n`, 0
+  db `> %ld\n`, 0
 sep:
   db `----\n`, 0
 

@@ -1,6 +1,10 @@
 ; Run with:
 ;   nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
+global    _main
+extern    _puts
+extern    _printf
+
 %ifndef SQRT_SIZE
 %define SQRT_SIZE 10_000
 %endif
@@ -65,8 +69,28 @@ SEARCH_LIMIT_OFFSET equ 8
   jl        %1#_reverse
 %endmacro
 
-global    _main
-extern    _puts
+; debug <format> <value>
+; Save a bunch of callee saved registers for convinience.
+%macro debug 2
+  ; Push the things we want to save.
+  push      r11
+  push      r12
+  push      rax
+  push      rcx
+  push      rdi
+  push      rsi
+  ; Do the print
+  mov       rsi, %2
+  lea       rdi, [rel %1]
+  call _printf
+  ; Pop everything.
+  pop       rsi
+  pop       rdi
+  pop       rcx
+  pop       rax
+  pop       r12
+  pop       r11
+%endmacro
 
 section   .text
 
@@ -230,44 +254,17 @@ exit:
   xor       rax, rax                ; return 0
   ret
 
-; Print out the number at rdi for debugging.
-; Save a bunch of callee saved registers for convinience.
-debug_u64:
-  ; Push the things we want to save.
-  push      r11
-  push      r12
-  push      rax
-  push      rcx
-  ; Convert the number to a string.
-  mov       r12, rdi
-  lea       rdi, [rel print_buffer]
-  itoa      print_u64_itoa, r12, rdi
-  mov       [rdi], byte 0
-  lea       rdi, [rel print_buffer]
-  ; Write.
-  push      rsp                     ; Required for alignment.
-  call _puts
-  pop       rsp
-  ; Pop everything.
-  pop       rcx
-  pop       rax
-  pop       r12
-  pop       r11
-  ret
-
-print_sep:
-  push      rsp                     ; Required for alignment.
-  lea       rdi, [rel sep]
-  call _puts
-  pop       rsp
-  ret
-
 section   .data
 
-sep:
-  db "----", 0
+; Small primes to directly print.
 prelude:
   db `2\n3\n5\n7`, 0
+
+; Format strings for debugging.
+format_u64:
+  db `> %d\n`, 0
+sep:
+  db `----\n`, 0
 
 section .bss
 

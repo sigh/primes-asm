@@ -193,7 +193,8 @@ handle_segment_loop:
 ; Print the primes in the current segment.
 print_segment:
   xor       r14, r14                ; x = 0
-  lea       rdi, [rel print_buffer] ; buf = print_buffer
+  lea       rsi, [rel print_buffer] ; buf = print_buffer
+  lea       rdi, [rel print_buffer]
 print_segment_loop:
   ; Keep looping until candidate_array[x-1] != 0
   ; Note: candidate_array has a sentinal, so we don't need to check the loop condition.
@@ -205,15 +206,18 @@ print_segment_found:
   jg        print_segment_write     ; | if (x > ARRAY_SIZE) print_segment_write
   lea       r12, [rbx+r14]          ; |
   lea       r12, [r12+r12-1]        ; | r12 = (segment_start + x)*2 + 1
-  itoa      itoa_print_segment, r12, rdi
-  mov       [rdi], byte `\n`        ; |
-  add       rdi, 1                  ; | *buf++ = '\n'
+  itoa      itoa_print_segment, r12, rsi
+  mov       [rsi], byte `\n`        ; |
+  add       rsi, 1                  ; | *buf++ = '\n'
   jmp       print_segment_loop
 print_segment_write:
+  ; If we have nothing to write, don't call _puts because it adds a newline.
+  cmp       rsi, rdi
+  je        print_segment_skip
   ; Overwrite the last newline with a null byte to terminate the string.
-  mov       [rdi-1], byte 0
-  lea       rdi, [rel print_buffer]
+  mov       [rsi-1], byte 0
   call _puts
+print_segment_skip:
 
 ; Continue looping until we reach the search limit.
   add       rbx, ARRAY_SIZE

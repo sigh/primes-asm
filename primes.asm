@@ -87,7 +87,7 @@ initialize:
   lea       r11, [rel initial_primes]
 
   ; Set up the search limit
-  mov       rax, SEARCH_LIMIT
+  mov       rax, SEARCH_LIMIT/2
   mov       [rsp+SEARCH_LIMIT_OFFSET], rax
 
   ; Set the candidate array to all 1s (except for 1).
@@ -109,14 +109,12 @@ collect_initial_primes:
   ; as all the previous candidates have been cleared already.
   mov       rax, r12                ; a = p
   mul       rax                     ; a = a*a
-  ; If p*p is past the end of the array, we have marked all the primes in the segment.
-  ; So we can just directly collect the rest.
-  cmp       rax, SEGMENT_SIZE
-  jge       collect_large_initial_primes  ; | if (a >= ARRAY_SIZE) collect_large_initial_primes
   ; Shift a to account for the fact that the array only contains odd numbers.
   shr       rax, 1                  ; a = a/2 = (p*p)/2
   sub       rax, ARRAY_SIZE
-  xor       ecx, ecx                ; k = 0
+  ; If p*p is past the end of the array, we have marked all the primes in the segment.
+  ; So we can just directly collect the rest.
+  jge       collect_large_initial_primes  ; | if (a >= ARRAY_SIZE) collect_large_initial_primes
 
 ; Clear values (k+p)*p where k is even.
 ; This clears entries a+m*p from the candidate_array at r13.
@@ -124,16 +122,16 @@ collect_initial_primes:
 %macro clear_prime_multiples 1
 clear_prime_multiples_%1:
   mov       [r13+rax], byte 0       ; candidate_array[a] = 0
-  add       ecx, 2                  ; k += 2
   add       rax, r12                ; a += p
   jl        clear_prime_multiples_%1 ; if (a < 0) continue
 %endmacro
 
   clear_prime_multiples initial_primes
 
-  mov       [r11+r15*8], r12d       ; |
-  mov       [r11+r15*8+4], ecx      ; |
-  add       r15, 1                  ; | initial_primes[n++] = (p, k)
+  add       rax, ARRAY_SIZE         ; |
+  mov       [r11+r15], rax          ; |
+  mov       [r11+r15+8], r12d       ; | initial_primes[n/16] = (f/2, p)
+  add       r15, 16                 ; n += 16
   jmp       collect_initial_primes
 
 ; Collect the rest of the primes in the initial segment.
@@ -149,9 +147,12 @@ collect_large_initial_primes_found:
   cmp       r14, ARRAY_SIZE         ; |
   jge       all_segments            ; | if (x >= ARRAY_SIZE) goto all_segments
   lea       r12, [r14*2+1]          ; p = x*2 + 1
-  mov       [r11+r15*8], r12d       ; |
-  mov       [r11+r15*8+4], dword 0  ; |
-  add       r15, 1                  ; | initial_primes[n++] = (p, 0)
+  mov       rax, r12                ; |
+  mul       rax                     ; | f = p*p (next factor to look at)
+  shr       rax, 1                  ; |
+  mov       [r11+r15], rax          ; |
+  mov       [r11+r15+8], r12d       ; | initial_primes[n/16] = (f/2, p)
+  add       r15, 16                 ; n += 16
   jmp       collect_large_initial_primes_loop
 
 ; Now that we've found the initial primes, iterate over all segments find the
@@ -174,30 +175,19 @@ handle_segment:
 handle_segment_loop:
   cmp       r14, r15
   jge       print_segment           ; if (x >= n) print_segment
-  mov       r12d, [r11+r14*8]       ; |
-  mov       eax, [r11+r14*8+4]      ; | (p, k) = initial_primes[x]
-  mov       ecx, eax                ; save k save the updated value back
-  add       r14, 1                  ; x++
-  ; Find the next multiple for sieving
-  add       eax, r12d               ; |
-  mul       r12                     ; |
-  sub       rax, rbx                ; | a = (k+p)*p - segment_start
+  mov       rax, [r11+r14]          ; |
+  mov       r12d, [r11+r14+8]       ; | (p, f/2) = initial_primes[x/16]
+  add       r14, 16                 ; x += 16
+  sub       rax, rbx                ; a = f/2 - segment_start
   ; Check if this multiple is too large for the segment.
-  cmp       rax, SEGMENT_SIZE
-  jge       handle_segment_early_exit
-  ; Half the offset to get to the offset into the array (as the array skips even numbers).
-  shr       rax, 1
-  sub       rax, ARRAY_SIZE
+  sub       rax, ARRAY_SIZE         ; a = f/2 - segment_start - array_size
+  ; NOTE: We could do an extra check to see if we can finish this segment
+  ; entirely, but currently that doesn't seem to help.
+  jge       handle_segment_loop
 
   clear_prime_multiples all_segments
-  mov       [r11+r14*8-4], ecx      ; Save the updated value of k
-  jmp       handle_segment_loop
-handle_segment_early_exit:
-  ; Check if we can exit early.
-  ; If the next multiple `k` is 0, then it means that it's too early for this
-  ; prime to have any effect. This means we can skip over all future primes also.
-  cmp       [r11+r14*8-4], dword 0
-  je        print_segment
+  lea       rax, [rax+rbx+ARRAY_SIZE] ; | Add back in the segment_start and array_size
+  mov       [r11+r14-16], rax         ; | Save the updated value of f/2
   jmp       handle_segment_loop
 
 ; Print the primes in the current segment.
@@ -213,7 +203,8 @@ print_segment_loop:
 print_segment_found:
   cmp       r14, ARRAY_SIZE         ; |
   jg        print_segment_write     ; | if (x > ARRAY_SIZE) print_segment_write
-  lea       r12, [rbx+r14*2-1]      ; r12 = segment_start + x*2 - 1
+  lea       r12, [rbx+r14]          ; |
+  lea       r12, [r12+r12-1]        ; | r12 = (segment_start + x)*2 + 1
   itoa      itoa_print_segment, r12, rdi
   mov       [rdi], byte `\n`        ; |
   add       rdi, 1                  ; | *buf++ = '\n'
@@ -225,7 +216,7 @@ print_segment_write:
   call _puts
 
 ; Continue looping until we reach the search limit.
-  add       rbx, SEGMENT_SIZE
+  add       rbx, ARRAY_SIZE
   cmp       rbx, [rsp+SEARCH_LIMIT_OFFSET]
   jl        all_segments_loop
 
@@ -284,10 +275,12 @@ candidate_array_end:
   alignb 16
 initial_primes:
   ; TODO: Can these be packed further by storing deltas?
-  ; Store pairs of 32-bit uints (p, k) where:
+  ; Store pairs (k: u64, p: u32) where:
+  ;  - k is the next candidate to be removed
   ;  - p is the prime
-  ;  - (k+p)*p is the next candidate to be removed
-  resq ARRAY_SIZE
+  ;  NOTE: It's difficult to find a way to represent k so that it will reliably
+  ;        fit in 32 bits.
+  resb ARRAY_SIZE*16
 
 print_buffer:
   ; 20 bytes is enough to store 2**64

@@ -116,9 +116,9 @@ collect_initial_primes:
   ; So we can just directly collect the rest.
   jge       collect_large_initial_primes  ; | if (a >= ARRAY_SIZE) collect_large_initial_primes
 
-; Clear values (k+p)*p where k is even.
+; Clear values f*p where f is even.
 ; This clears entries a+m*p from the candidate_array at r13.
-; Where a = rax, k = ecx, p = r12
+; Where a = rax, p = r12
 %macro clear_prime_multiples 1
 clear_prime_multiples_%1:
   mov       [r13+rax], byte 0       ; candidate_array[a] = 0
@@ -279,11 +279,12 @@ candidate_array_end:
   alignb 16
 initial_primes:
   ; TODO: Can these be packed further by storing deltas?
-  ; Store pairs (k: u64, p: u32) where:
-  ;  - k is the next candidate to be removed
+  ; Store pairs (f/2: u64, p: u32) where:
+  ;  - f is the next candidate to be removed
   ;  - p is the prime
-  ;  NOTE: It's difficult to find a way to represent k so that it will reliably
+  ;  NOTE: It's difficult to find a way to represent f so that it will reliably
   ;        fit in 32 bits.
+  ;        Storing it like this allows us to make the inner clearing loop smaller.
   resb ARRAY_SIZE*16
 
 print_buffer:

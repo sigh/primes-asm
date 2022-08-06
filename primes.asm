@@ -41,30 +41,11 @@ NEXT_POW_OFFSET     equ 16
   pop       r11
 %endmacro
 
-; roll_wheel <label> <offset>
-%macro roll_wheel 2
-  ; Align wheel with offset (we have padding in candidate array so it's ok to
-  ; overwrite negative entries).
-  mov       rdi, %2                 ; |
-  mov       rax, 0x8888888888888889 ; |
-  mul       rdi                     ; |
-  shr       rdx, 3                  ; | d = offset/15 (15 = WHEEL_SIZE/2)
-  mov       rcx, rdx                ; |
-  sal       rcx, 4                  ; | c = d*16
-  lea       rdx, [rdi + rdx + ARRAY_SIZE] ;
-  sub       rcx, rdx                ; | c = -offset%15-ARRAY_SIZE
-                                    ; |   = (d*16-d)       - offset - ARRAY_SIZE
-                                    ; |   = (offset/15)*15 - offset - ARRAY_SIZE
-  ; Roll wheel 16 entries at a time.
-  mov       rax, 0x0001010001000001
-  mov       rdx, 0x0101000001000101
-  ; Index relative to end of array so that the loop condition is checked by the add.
-  lea       rdi, [rel candidate_array_end]
-roll_wheel_loop_%1:
-  mov       [rdi+rcx], rax
-  mov       [rdi+rcx+8], rdx
-  add       rcx, WHEEL_SIZE/2
-  jl        roll_wheel_loop_%1
+%macro memcpy 3
+  lea rsi, %1
+  lea rdi, %2
+  mov rcx, %3
+  rep movsq
 %endmacro
 
 section   .text
@@ -83,7 +64,7 @@ initialize:
   mov       r12, 1                  ; p = 1
   xor       r15, r15                ; n = 0
   xor       r14, r14                ; x = 0
-  lea       r11, [rel initial_primes]
+  lea       r11, [rel sieve_primes]
   mov       rax, 1
   mov       [rsp+OUTPUT_LEN_OFFSET], rax
   mov       rax, 10
@@ -93,20 +74,34 @@ initialize:
   mov       rax, SEARCH_LIMIT/2
   mov       [rsp+SEARCH_LIMIT_OFFSET], rax
 
-  ; Set the candidate array to all 1s (except for 1).
+  ; Set up template candidate array
+  mov       rax, 0x0001010001000001
+  mov       rdx, 0x0101000001000101
+  xor       rcx, rcx
+  lea       rdi, [rel template_candidate_array]
+init_template_loop:
+  mov       [rdi+rcx], rax
+  mov       [rdi+rcx+8], rdx
+  add       rcx, WHEEL_SIZE/2
+  cmp       rcx, ARRAY_SIZE
+  jl        init_template_loop
+
+  ; Initialize the candidate array from the template.
+  memcpy    [rel template_candidate_array], \
+            [rel candidate_array], \
+            ARRAY_SIZE/8+WHEEL_SIZE/16+1
   ; r13 refers to the end of the array so that loop termination can just check
   ; against 0 instead of doing an explicit comparision.
   lea       r13, [rel candidate_array_end]
-  roll_wheel initial_primes, 0
   mov       [r13-ARRAY_SIZE], byte 0 ; candidate_array[0] = 0 (i.e. 1 is not a prime)
   mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
 
-; Find primes in initial segment.
-collect_initial_primes:
+; Find primes in first segment.
+collect_sieve_primes:
   add       r14, 1                  ; x++
   add       r12, 2                  ; p += 2
   cmp       [r13+r14-ARRAY_SIZE], byte 0
-  je        collect_initial_primes  ; if (candidate_array[x] == 0) collect_initial_primes
+  je        collect_sieve_primes  ; if (candidate_array[x] == 0) collect_sieve_primes
 
   ; Calculate a = p*p. This is the first candidate we want to start clearing,
   ; as all the previous candidates have been cleared already.
@@ -117,7 +112,7 @@ collect_initial_primes:
   sub       rax, ARRAY_SIZE
   ; If p*p is past the end of the array, we have marked all the primes in the segment.
   ; So we can just directly collect the rest.
-  jge       collect_large_initial_primes  ; | if (a >= ARRAY_SIZE) collect_large_initial_primes
+  jge       collect_large_sieve_primes  ; | if (a >= ARRAY_SIZE) collect_large_sieve_primes
 
 ; Clear values f*p where f is even.
 ; This clears entries a+m*p from the candidate_array at r13.
@@ -129,24 +124,24 @@ clear_prime_multiples_%1:
   jl        clear_prime_multiples_%1 ; if (a < 0) continue
 %endmacro
 
-  clear_prime_multiples initial_primes
+  clear_prime_multiples sieve_primes
 
   add       rax, ARRAY_SIZE         ; |
   mov       [r11+r15], rax          ; |
-  mov       [r11+r15+8], r12d       ; | initial_primes[n/16] = (f/2, p)
+  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f/2, p)
   add       r15, 16                 ; n += 16
-  jmp       collect_initial_primes
+  jmp       collect_sieve_primes
 
-; Collect the rest of the primes in the initial segment.
+; Collect the rest of the primes in the first segment.
 ; These primes are too large to affect the first segment.
-collect_large_initial_primes:
+collect_large_sieve_primes:
   sub       r14, 1
-collect_large_initial_primes_loop:
+collect_large_sieve_primes_loop:
   ; NOTE: Because we have a sentinal element, we don't need to check the loop bounds here.
   add       r14, 1
   cmp       [r13+r14-ARRAY_SIZE], byte 0
-  je        collect_large_initial_primes_loop ; if (candidate_array[x] == 0) collect_large_initial_primes_loop
-collect_large_initial_primes_found:
+  je        collect_large_sieve_primes_loop ; if (candidate_array[x] == 0) collect_large_sieve_primes_loop
+collect_large_sieve_primes_found:
   cmp       r14, ARRAY_SIZE         ; |
   jge       all_segments            ; | if (x >= ARRAY_SIZE) goto all_segments
   lea       r12, [r14*2+1]          ; p = x*2 + 1
@@ -154,11 +149,11 @@ collect_large_initial_primes_found:
   mul       rax                     ; | f = p*p (next factor to look at)
   shr       rax, 1                  ; |
   mov       [r11+r15], rax          ; |
-  mov       [r11+r15+8], r12d       ; | initial_primes[n/16] = (f/2, p)
+  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f/2, p)
   add       r15, 16                 ; n += 16
-  jmp       collect_large_initial_primes_loop
+  jmp       collect_large_sieve_primes_loop
 
-; Now that we've found the initial primes, iterate over all segments find the
+; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
 all_segments:
   xor       rbx, rbx                ; segment_start = 0
@@ -170,16 +165,35 @@ all_segments:
 
 all_segments_loop:
 
-; Find the primes in the next segment by sieving out all of the initial primes.
+; Find the primes in the next segment by sieving out all of the sieve primes.
 handle_segment:
-  roll_wheel segment, rbx
+  memcpy    [rel template_candidate_array], \
+            [rel candidate_array], \
+            ARRAY_SIZE/8+WHEEL_SIZE/16+1
+
+  ; Calculate offset for alignment with the wheel.
+  mov       rax, 0x8888888888888889 ; |
+  mul       rbx                     ; |
+  shr       rdx, 3                  ; | d = offset/15 (15 = WHEEL_SIZE/2)
+  mov       rcx, rdx                ; |
+  sal       rcx, 4                  ; | c = d*16
+  add       rdx, rbx                ; |
+  sub       rdx, rcx                ; | d = offset%15
+                                    ; |   = offset-(d*16-d)
+                                    ; |   = offset-(offset/15)*15
+  ; Align candidate_array with the wheel.
+  ; (we have padding at the end so it's  ok to go over).
+  lea       r13, [rel candidate_array_end]
+  add       r13, rdx
+  mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
+
   xor       r14, r14                ; x = 0
-  lea       r11, [rel initial_primes]
+  lea       r11, [rel sieve_primes]
 handle_segment_loop:
   cmp       r14, r15
   jge       print_segment           ; if (x >= n) print_segment
   mov       rax, [r11+r14]          ; |
-  mov       r12d, [r11+r14+8]       ; | (p, f/2) = initial_primes[x/16]
+  mov       r12d, [r11+r14+8]       ; | (p, f/2) = sieve_primes[x/16]
   add       r14, 16                 ; x += 16
   sub       rax, rbx                ; a = f/2 - segment_start
   ; Check if this multiple is too large for the segment.
@@ -280,14 +294,20 @@ sep:
 
 section .bss
 
+  alignb 64
+template_candidate_array:
+  resb ARRAY_SIZE
   resb WHEEL_SIZE/2  ; buffer
+
+  alignb 64
 candidate_array:
   resb ARRAY_SIZE
 candidate_array_end:
   resb WHEEL_SIZE/2  ; buffer
 
-  alignb 16
-initial_primes:
+  alignb 64
+; Primes used for sieving.
+sieve_primes:
   ; TODO: Can these be packed further by storing deltas?
   ; Store pairs (f/2: u64, p: u32) where:
   ;  - f is the next candidate to be removed

@@ -11,12 +11,12 @@ extern    _printf
 SEGMENT_SIZE  equ SQRT_SIZE
 SEARCH_LIMIT  equ SEGMENT_SIZE*SEGMENT_SIZE
 ARRAY_SIZE    equ SEGMENT_SIZE/2
-WHEEL_SIZE    equ 30
 
-LOCAL_VAR_BYTES     equ 32
+LOCAL_VAR_BYTES     equ 48
 SEARCH_LIMIT_OFFSET equ 8
-OUTPUT_LEN_OFFSET   equ 24
-NEXT_POW_OFFSET     equ 16
+OUTPUT_LEN_OFFSET   equ 16
+NEXT_POW_OFFSET     equ 24
+WHEEL_LEN_OFFSET    equ 32
 
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
@@ -24,6 +24,8 @@ NEXT_POW_OFFSET     equ 16
   ; Push the things we want to save.
   push      r11
   push      r12
+  push      r14
+  push      r15
   push      rax
   push      rcx
   push      rdi
@@ -37,6 +39,8 @@ NEXT_POW_OFFSET     equ 16
   pop       rdi
   pop       rcx
   pop       rax
+  pop       r15
+  pop       r14
   pop       r12
   pop       r11
 %endmacro
@@ -55,48 +59,109 @@ _main:
   sub       rsp, LOCAL_VAR_BYTES
 
 initialize:
-  ; Write out the first prime directly, as we elide all even numbers in the rest
-  ; of the program.
+  ; Write out the first primes directly.
+  ;  - 2 has to be printed directly because the rest of the program assumes odd
+  ;    numbers.
+  ;  - The single digit primes are printed out as the itoa code doesn't handle
+  ;    them.
   lea       rdi, [rel prelude]
   call      _puts
 
-  ; Initialize variables.
-  mov       r12, 1                  ; p = 1
-  xor       r15, r15                ; n = 0
-  xor       r14, r14                ; x = 0
-  lea       r11, [rel sieve_primes]
+  ; Initialize stack variables.
   mov       rax, 1
   mov       [rsp+OUTPUT_LEN_OFFSET], rax
   mov       rax, 10
   mov       [rsp+NEXT_POW_OFFSET], rax
-
-  ; Set up the search limit
   mov       rax, SEARCH_LIMIT/2
   mov       [rsp+SEARCH_LIMIT_OFFSET], rax
 
-  ; Set up template candidate array
-  mov       rax, 0x0001010001000001
-  mov       rdx, 0x0101000001000101
-  xor       rcx, rcx
-  lea       rdi, [rel template_candidate_array]
-init_template_loop:
-  mov       [rdi+rcx], rax
-  mov       [rdi+rcx+8], rdx
-  add       rcx, WHEEL_SIZE/2
-  cmp       rcx, ARRAY_SIZE
-  jl        init_template_loop
-
-  ; Initialize the candidate array from the template.
-  memcpy    [rel template_candidate_array], \
-            [rel candidate_array], \
-            ARRAY_SIZE/8+WHEEL_SIZE/16+1
+  ; Initialize the candidate_array with 1s.
+  mov       rcx, ARRAY_SIZE
+  mov       al, byte 1
+  lea       rdi, [rel candidate_array]
+  rep       stosb                   ; Copy rcx copies of al to rdi.
   ; r13 refers to the end of the array so that loop termination can just check
   ; against 0 instead of doing an explicit comparision.
   lea       r13, [rel candidate_array_end]
-  mov       [r13-ARRAY_SIZE], byte 0 ; candidate_array[0] = 0 (i.e. 1 is not a prime)
   mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
 
-; Find primes in first segment.
+  ; Initial variables used in the first segment.
+  lea       r11, [rel sieve_primes]
+  mov       r12, 1                  ; p = 1
+  xor       r15, r15                ; n = 0
+  xor       r14, r14                ; x = 0
+  mov       rbx, 1                  ; w = 1
+
+; Find the primes to use for the wheel.
+; Keep collecting primes until their product is too large for the first segment.
+collect_wheel_primes:
+  add       r14, 1                  ; x++
+  add       r12, 2                  ; p += 2
+  cmp       [r13+r14-ARRAY_SIZE], byte 0
+  je        collect_wheel_primes  ; if (candidate_array[x] == 0) collect_wheel_primes
+
+  mov       rax, r12                ; |
+  mul       rbx                     ; |
+  cmp       rax, ARRAY_SIZE         ; |
+  jg        fill_template_candidate_array ; | if (w*p > ARRAY_SIZE)
+                                          ; |   fill_template_candidate_array
+  mov       rbx, rax                ; w = w*p
+
+  ; Calculate a = p*p. This is the first candidate we want to start clearing,
+  ; as all the previous candidates have been cleared already.
+  mov       rax, r12                ; |
+  mul       rax                     ; | a = p*p
+  ; Shift a to account for the fact that the array only contains odd numbers.
+  ; Make it a negative offset as required by the clear_prime_multiples loop.
+  shr       rax, 1                  ; |
+  sub       rax, ARRAY_SIZE         ; | a = (p*p)/2 - ARRAY_SIZE
+
+; Clear values f*p where f is even.
+; This clears entries a+m*p from the candidate_array at r13.
+; a must be a negative index, so that we exit the loop when it reaches 0.
+; Where a = rax, p = r12
+%macro clear_prime_multiples 1
+clear_prime_multiples_%1:
+  mov       [r13+rax], byte 0       ; candidate_array[a] = 0
+  add       rax, r12                ; a += p
+  jl        clear_prime_multiples_%1 ; if (a < 0) continue
+%endmacro
+
+  clear_prime_multiples wheel_primes
+
+  ; NOTE: We don't store wheel primes in sieve_primes, as they are automatically
+  ;       excluded by the wheel.
+  jmp collect_wheel_primes
+
+fill_template_candidate_array:
+  mov       [rsp+WHEEL_LEN_OFFSET], rbx
+
+  ; Copy the wheel to the template.
+  lea       rdx, [rel template_candidate_array]
+  memcpy    [rel candidate_array], \
+            [rdx], \
+            ARRAY_SIZE/8+1
+  ; Make a second copy offset by the wheel size, to account for offsets.
+  memcpy    [rel candidate_array], \
+            [rdx+rbx], \
+            ARRAY_SIZE/8+1
+
+  ; We need to reprocess the current prime, as it is not part of the wheel.
+  sub r14, 1
+  sub r12, 2
+
+  ; Clear the wheel primes from the template array.
+  ; We want to keep them in the candidate array so that they get printed
+  ; out.
+  mov       al, byte 0
+  mov       rcx, r14
+  lea       rdi, [rdx+1]
+  rep       stosb
+  mov       rcx, r14
+  lea       rdi, [rdx+rbx+1]
+  rep       stosb
+
+; Find primes for sieving (in the first segment).
 collect_sieve_primes:
   add       r14, 1                  ; x++
   add       r12, 2                  ; p += 2
@@ -108,21 +173,12 @@ collect_sieve_primes:
   mov       rax, r12                ; a = p
   mul       rax                     ; a = a*a
   ; Shift a to account for the fact that the array only contains odd numbers.
-  shr       rax, 1                  ; a = a/2 = (p*p)/2
-  sub       rax, ARRAY_SIZE
+  ; Make it a negative offset as required by the clear_prime_multiples loop.
+  shr       rax, 1                  ; |
+  sub       rax, ARRAY_SIZE         ; | a = (p*p)/2 - ARRAY_SIZE
   ; If p*p is past the end of the array, we have marked all the primes in the segment.
   ; So we can just directly collect the rest.
-  jge       collect_large_sieve_primes  ; | if (a >= ARRAY_SIZE) collect_large_sieve_primes
-
-; Clear values f*p where f is even.
-; This clears entries a+m*p from the candidate_array at r13.
-; Where a = rax, p = r12
-%macro clear_prime_multiples 1
-clear_prime_multiples_%1:
-  mov       [r13+rax], byte 0       ; candidate_array[a] = 0
-  add       rax, r12                ; a += p
-  jl        clear_prime_multiples_%1 ; if (a < 0) continue
-%endmacro
+  jge       collect_large_sieve_primes  ; | if (p*p/2 >= ARRAY_SIZE) collect_large_sieve_primes
 
   clear_prime_multiples sieve_primes
 
@@ -167,20 +223,19 @@ all_segments_loop:
 
 ; Find the primes in the next segment by sieving out all of the sieve primes.
 handle_segment:
+  ; Copy enough 8-byte elements to hold an offset wheel.
+  mov       rax, [rsp+WHEEL_LEN_OFFSET] ; |
+  shr       rax, 3                      ; |
+  add       rax, ARRAY_SIZE/8+1         ; | a = (w+ARRAY_SIZE)/8+1
   memcpy    [rel template_candidate_array], \
             [rel candidate_array], \
-            ARRAY_SIZE/8+WHEEL_SIZE/16+1
+            rax
 
   ; Calculate offset for alignment with the wheel.
-  mov       rax, 0x8888888888888889 ; |
-  mul       rbx                     ; |
-  shr       rdx, 3                  ; | d = offset/15 (15 = WHEEL_SIZE/2)
-  mov       rcx, rdx                ; |
-  sal       rcx, 4                  ; | c = d*16
-  add       rdx, rbx                ; |
-  sub       rdx, rcx                ; | d = offset%15
-                                    ; |   = offset-(d*16-d)
-                                    ; |   = offset-(offset/15)*15
+  mov       rcx, [rsp+WHEEL_LEN_OFFSET] ; |
+  xor       rdx, rdx                    ; |
+  mov       rax, rbx                    ; |
+  idiv      rcx                         ; | d = offset%w
   ; Align candidate_array with the wheel.
   ; (we have padding at the end so it's  ok to go over).
   lea       r13, [rel candidate_array_end]
@@ -296,14 +351,13 @@ section .bss
 
   alignb 64
 template_candidate_array:
-  resb ARRAY_SIZE
-  resb WHEEL_SIZE/2  ; buffer
+  resb ARRAY_SIZE*2
 
   alignb 64
 candidate_array:
   resb ARRAY_SIZE
 candidate_array_end:
-  resb WHEEL_SIZE/2  ; buffer
+  resb ARRAY_SIZE ; buffer
 
   alignb 64
 ; Primes used for sieving.

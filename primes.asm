@@ -11,19 +11,12 @@ extern    _printf
 SEGMENT_SIZE  equ SQRT_SIZE
 SEARCH_LIMIT  equ SEGMENT_SIZE*SEGMENT_SIZE
 ARRAY_SIZE    equ SEGMENT_SIZE/2
+WHEEL_SIZE    equ 30
 
 LOCAL_VAR_BYTES     equ 32
 SEARCH_LIMIT_OFFSET equ 8
 OUTPUT_LEN_OFFSET   equ 24
 NEXT_POW_OFFSET     equ 16
-
-; Set the candidate array back to all 1s
-%macro reset_candidate_array 0
-  mov       rcx, ARRAY_SIZE
-  mov       al, byte 1
-  lea       rdi, [rel candidate_array]
-  rep       stosb                   ; Copy rcx copies of al to rdi.
-%endmacro
 
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
@@ -46,6 +39,32 @@ NEXT_POW_OFFSET     equ 16
   pop       rax
   pop       r12
   pop       r11
+%endmacro
+
+; roll_wheel <label> <offset>
+%macro roll_wheel 2
+  ; Align wheel with offset (we have padding in candidate array so it's ok to
+  ; overwrite negative entries).
+  mov       rdi, %2                 ; |
+  mov       rax, 0x8888888888888889 ; |
+  mul       rdi                     ; |
+  shr       rdx, 3                  ; | d = offset/15 (15 = WHEEL_SIZE/2)
+  mov       rcx, rdx                ; |
+  sal       rcx, 4                  ; | c = d*16
+  lea       rdx, [rdi + rdx + ARRAY_SIZE] ;
+  sub       rcx, rdx                ; | c = -offset%15-ARRAY_SIZE
+                                    ; |   = (d*16-d)       - offset - ARRAY_SIZE
+                                    ; |   = (offset/15)*15 - offset - ARRAY_SIZE
+  ; Roll wheel 16 entries at a time.
+  mov       rax, 0x0001010001000001
+  mov       rdx, 0x0101000001000101
+  ; Index relative to end of array so that the loop condition is checked by the add.
+  lea       rdi, [rel candidate_array_end]
+roll_wheel_loop_%1:
+  mov       [rdi+rcx], rax
+  mov       [rdi+rcx+8], rdx
+  add       rcx, WHEEL_SIZE/2
+  jl        roll_wheel_loop_%1
 %endmacro
 
 section   .text
@@ -78,7 +97,7 @@ initialize:
   ; r13 refers to the end of the array so that loop termination can just check
   ; against 0 instead of doing an explicit comparision.
   lea       r13, [rel candidate_array_end]
-  reset_candidate_array
+  roll_wheel initial_primes, 0
   mov       [r13-ARRAY_SIZE], byte 0 ; candidate_array[0] = 0 (i.e. 1 is not a prime)
   mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
 
@@ -153,7 +172,7 @@ all_segments_loop:
 
 ; Find the primes in the next segment by sieving out all of the initial primes.
 handle_segment:
-  reset_candidate_array
+  roll_wheel segment, rbx
   xor       r14, r14                ; x = 0
   lea       r11, [rel initial_primes]
 handle_segment_loop:
@@ -261,10 +280,11 @@ sep:
 
 section .bss
 
+  resb WHEEL_SIZE/2  ; buffer
 candidate_array:
   resb ARRAY_SIZE
 candidate_array_end:
-  resq 1  ; buffer
+  resb WHEEL_SIZE/2  ; buffer
 
   alignb 16
 initial_primes:

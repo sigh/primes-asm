@@ -6,7 +6,7 @@ extern    _puts
 extern    _printf
 
 %ifndef SQRT_SIZE
-%define SQRT_SIZE 10_000
+%define SQRT_SIZE 65536
 %endif
 SEGMENT_SIZE  equ SQRT_SIZE
 SEARCH_LIMIT  equ SEGMENT_SIZE*SEGMENT_SIZE
@@ -51,7 +51,9 @@ WHEEL_OFFSET_VAR    equ 44
   pop       r8
 %endmacro
 
-%macro memcpy 3
+; Copies data in 8 byte chunks.
+; memcopy_q <src> <dest> <num quadwords>
+%macro memcpy_q 3
   lea rsi, %1
   lea rdi, %2
   mov rcx, %3
@@ -94,10 +96,10 @@ initialize:
 
   ; Initial variables used in the first segment.
   lea       r11, [rel sieve_primes]
-  mov       r12, 1                  ; p = 1
-  xor       r15, r15                ; n = 0
-  xor       r14, r14                ; x = 0
-  mov       rbx, 1                  ; w = 1
+  mov       r12, 1                  ; p = 1 (current prime)
+  xor       r15, r15                ; n = 0 (offset into sieve_primes array)
+  xor       r14, r14                ; x = 0 (current index)
+  mov       rbx, 1                  ; w = 1 (wheel length)
 
 ; Find the primes to use for the wheel.
 ; Keep collecting primes until their product is too large for the first segment.
@@ -105,11 +107,11 @@ collect_wheel_primes:
   add       r14, 1                  ; x++
   add       r12, 2                  ; p += 2
   cmp       [r13+r14-ARRAY_SIZE], byte 0
-  je        collect_wheel_primes  ; if (candidate_array[x] == 0) collect_wheel_primes
+  je        collect_wheel_primes    ; if (candidate_array[x] == 0) collect_wheel_primes
 
-  mov       rax, r12                ; |
-  mul       rbx                     ; |
-  cmp       rax, ARRAY_SIZE         ; |
+  mov       rax, r12                      ; |
+  mul       rbx                           ; |
+  cmp       rax, ARRAY_SIZE               ; |
   jg        fill_template_candidate_array ; | if (w*p > ARRAY_SIZE)
                                           ; |   fill_template_candidate_array
   mov       rbx, rax                ; w = w*p
@@ -143,11 +145,11 @@ clear_prime_multiples_%1:
 fill_template_candidate_array:
   ; Copy the wheel to the template.
   lea       rdx, [rel template_candidate_array]
-  memcpy    [rel candidate_array], \
+  memcpy_q  [rel candidate_array], \
             [rdx], \
             ARRAY_SIZE/8+1
   ; Make a second copy offset by the wheel size, to account for offsets.
-  memcpy    [rel candidate_array], \
+  memcpy_q  [rel candidate_array], \
             [rdx+rbx], \
             ARRAY_SIZE/8+1
 
@@ -187,7 +189,7 @@ collect_sieve_primes:
   add       r14, 1                  ; x++
   add       r12, 2                  ; p += 2
   cmp       [r13+r14-ARRAY_SIZE], byte 0
-  je        collect_sieve_primes  ; if (candidate_array[x] == 0) collect_sieve_primes
+  je        collect_sieve_primes    ; if (candidate_array[x] == 0) collect_sieve_primes
 
   ; Calculate a = p*p. This is the first candidate we want to start clearing,
   ; as all the previous candidates have been cleared already.
@@ -248,7 +250,7 @@ handle_segment:
   mov       rax, [rsp+WHEEL_LEN_VAR]   ; |
   shr       rax, 3                     ; |
   add       rax, ARRAY_SIZE/8+1        ; | a = (w+ARRAY_SIZE)/8+1
-  memcpy    [rel template_candidate_array], \
+  memcpy_q  [rel template_candidate_array], \
             [rel candidate_array], \
             rax
 
@@ -274,7 +276,7 @@ handle_segment_loop:
   cmp       r14, r15
   jge       print_segment           ; if (x >= n) print_segment
   mov       rax, [r11+r14]          ; |
-  mov       r12d, [r11+r14+8]       ; | (p, f/2) = sieve_primes[x/16]
+  mov       r12d, [r11+r14+8]       ; | (f/2, p) = sieve_primes[x/16]
   add       r14, 16                 ; x += 16
   sub       rax, rbx                ; a = f/2 - segment_start
   ; Check if this multiple is too large for the segment.
@@ -384,40 +386,41 @@ prelude:
   db `2\n3\n5\n7`, 0
 
 ; Format strings for debugging.
-format_u64:
+format_64:
   db `> %ld\n`, 0
 sep:
   db `----\n`, 0
 
+; Lookup table mapping n in [0, 100) to 2 character ascii strings.
   align 16
 digit_pair_lookup:
-    dw 0x3030, 0x3130, 0x3230, 0x3330, 0x3430, 0x3530, 0x3630, 0x3730, 0x3830, 0x3930
-    dw 0x3031, 0x3131, 0x3231, 0x3331, 0x3431, 0x3531, 0x3631, 0x3731, 0x3831, 0x3931
-    dw 0x3032, 0x3132, 0x3232, 0x3332, 0x3432, 0x3532, 0x3632, 0x3732, 0x3832, 0x3932
-    dw 0x3033, 0x3133, 0x3233, 0x3333, 0x3433, 0x3533, 0x3633, 0x3733, 0x3833, 0x3933
-    dw 0x3034, 0x3134, 0x3234, 0x3334, 0x3434, 0x3534, 0x3634, 0x3734, 0x3834, 0x3934
-    dw 0x3035, 0x3135, 0x3235, 0x3335, 0x3435, 0x3535, 0x3635, 0x3735, 0x3835, 0x3935
-    dw 0x3036, 0x3136, 0x3236, 0x3336, 0x3436, 0x3536, 0x3636, 0x3736, 0x3836, 0x3936
-    dw 0x3037, 0x3137, 0x3237, 0x3337, 0x3437, 0x3537, 0x3637, 0x3737, 0x3837, 0x3937
-    dw 0x3038, 0x3138, 0x3238, 0x3338, 0x3438, 0x3538, 0x3638, 0x3738, 0x3838, 0x3938
-    dw 0x3039, 0x3139, 0x3239, 0x3339, 0x3439, 0x3539, 0x3639, 0x3739, 0x3839, 0x3939
+    db "0001020304050607080910111213141516171819"
+    db "2021222324252627282930313233343536373839"
+    db "4041424344454647484950515253545556575859"
+    db "6061626364656667686970717273747576777879"
+    db "8081828384858687888990919293949596979899"
 
 section .bss
 
+; Template array to hold the prime wheel.
+; This is used to initialize the candidate array before processing each segment.
+; Space is left at the end to be able to store an extra rotation of a wheel.
   alignb 64
 template_candidate_array:
   resb ARRAY_SIZE*2
 
+; The array used to sieving.
+; Enough space for processing a single segment, with a buffer so that we can
+; offset our use based on the position in the wheel.
   alignb 64
 candidate_array:
   resb ARRAY_SIZE
 candidate_array_end:
   resb ARRAY_SIZE ; buffer
 
-  alignb 64
 ; Primes used for sieving.
+  alignb 64
 sieve_primes:
-  ; TODO: Can these be packed further by storing deltas?
   ; Store pairs (f/2: u64, p: u32) where:
   ;  - f is the next candidate to be removed
   ;  - p is the prime
@@ -426,6 +429,7 @@ sieve_primes:
   ;        Storing it like this allows us to make the inner clearing loop smaller.
   resb ARRAY_SIZE*16
 
+; Buffer space to write the output string.
   alignb 64
 print_buffer:
   ; 20 bytes is enough to store 2**64

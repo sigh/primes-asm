@@ -10,5 +10,7 @@ Run (on macOS) with:
 nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 ```
 
-Generates the primes up to 100M in ~0.5s.
+By default generates all 32-bit primes (~5 seconds).
+
 Compile with `-DSQRT_SIZE=<size>` to generate primes up to `SQRT_SIZE**2`.
+`SQRT_SIZE` must be 32-bit, but the primes generated can be larger.

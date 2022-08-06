@@ -290,23 +290,33 @@ handle_segment_loop:
 
 ; Print the primes in the current segment.
 print_segment:
-  xor       r14, r14                ; x = 0
+  mov       rdi, -8                 ; byte = -8
   lea       rsi, [rel print_buffer] ; buf = print_buffer
-  lea       rdi, [rel print_buffer]
   mov       r8, [rsp+OUTPUT_LEN_VAR]
   mov       r9, [rsp+NEXT_POW_VAR]
   lea       r11, [rel digit_pair_lookup]
+  xor       r14, r14
+; Keep looping until we find an 8-byte section with some primes.
+  align 16  ; Makes this loop run better.
+print_segment_loop_inc:
+  add       rdi, 8
 print_segment_loop:
-  ; Keep looping until candidate_array[x-1] != 0
-  ; Note: candidate_array has a sentinal, so we don't need to check the loop condition.
-  add       r14, 1
-  cmp       [r13+r14-1-ARRAY_SIZE], byte 0
-  je        print_segment_loop
+  add       r14, [r13-ARRAY_SIZE+rdi]
+  jz        print_segment_loop_inc
+  ; Find the LSB.
+  bsf       rcx, r14
+  ; Unset the LSB.
+  lea       rax, [r14-1]
+  and       rax, r14
+  mov       [r13-ARRAY_SIZE+rdi], rax
+  xor       r14, r14
 print_segment_found:
-  cmp       r14, ARRAY_SIZE         ; |
-  jg        print_segment_write     ; | if (x > ARRAY_SIZE) print_segment_write
-  lea       r12, [rbx+r14]          ; |
-  lea       r12, [r12+r12-1]        ; | p = (segment_start + x)*2 + 1
+  shr       rcx, 3                  ; |
+  lea       rcx, [rdi+rcx]          ; | c = index into the current segment.
+  cmp       rcx, ARRAY_SIZE         ; |
+  jge       print_segment_write     ; | if (c > ARRAY_SIZE) print_segment_write
+  lea       r12, [rbx+rcx]          ; |
+  lea       r12, [r12+r12+1]        ; | p = (segment_start + c)*2 + 1
   cmp       r12, r9                 ; | if (p >= next_pow) {
   jl        print_segment_itoa      ; |
   inc       r8                      ; |   output_len++
@@ -348,9 +358,10 @@ print_segment_write:
   mov       [rsp+OUTPUT_LEN_VAR], r8
   mov       [rsp+NEXT_POW_VAR], r9
   ; If we have nothing to write, don't call _puts because it adds a newline.
+  lea       rdi, [rel print_buffer]
   cmp       rsi, rdi
   je        print_segment_skip
-  ; Add a newline to the end of the string.
+  ; Add a null byte to terminate the string.
   mov       [rsi-1], byte 0
   call _puts
 print_segment_skip:

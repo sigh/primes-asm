@@ -12,13 +12,13 @@ SEGMENT_SIZE  equ SQRT_SIZE
 SEARCH_LIMIT  equ SEGMENT_SIZE*SEGMENT_SIZE
 ARRAY_SIZE    equ SEGMENT_SIZE/2
 
-LOCAL_VAR_BYTES     equ 48
-SEARCH_LIMIT_OFFSET equ 8
-OUTPUT_LEN_OFFSET   equ 16
-NEXT_POW_OFFSET     equ 24
-WHEEL_LEN_OFFSET    equ 32
-WHEEL_DEC_OFFSET  equ 40
-WHEEL_OFFSET_OFFSET equ 44
+STACK_VAR_BYTES     equ 48
+SEARCH_LIMIT_VAR    equ 8
+OUTPUT_LEN_VAR      equ 16
+NEXT_POW_VAR        equ 24
+WHEEL_LEN_VAR       equ 32
+WHEEL_DEC_VAR       equ 40
+WHEEL_OFFSET_VAR    equ 44
 
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
@@ -62,7 +62,7 @@ section   .text
 
 _main:
   push      rsp                     ; Required for alignment
-  sub       rsp, LOCAL_VAR_BYTES
+  sub       rsp, STACK_VAR_BYTES
 
 initialize:
   ; Write out the first primes directly.
@@ -75,11 +75,11 @@ initialize:
 
   ; Initialize stack variables.
   mov       rax, 1
-  mov       [rsp+OUTPUT_LEN_OFFSET], rax
+  mov       [rsp+OUTPUT_LEN_VAR], rax
   mov       rax, 10
-  mov       [rsp+NEXT_POW_OFFSET], rax
+  mov       [rsp+NEXT_POW_VAR], rax
   mov       rax, SEARCH_LIMIT/2
-  mov       [rsp+SEARCH_LIMIT_OFFSET], rax
+  mov       [rsp+SEARCH_LIMIT_VAR], rax
 
   ; Initialize the candidate_array with 1s.
   mov       rcx, ARRAY_SIZE
@@ -89,7 +89,8 @@ initialize:
   ; r13 refers to the end of the array so that loop termination can just check
   ; against 0 instead of doing an explicit comparision.
   lea       r13, [rel candidate_array_end]
-  mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
+  ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
+  mov       [r13], byte 1
 
   ; Initial variables used in the first segment.
   lea       r11, [rel sieve_primes]
@@ -166,7 +167,7 @@ fill_template_candidate_array:
   rep       stosb
 
   ; Save the wheel offset.
-  mov       [rsp+WHEEL_LEN_OFFSET], rbx
+  mov       [rsp+WHEEL_LEN_VAR], rbx
 
   ; Determine the parameters for updating the wheel offset.
   xor       rdx, rdx                ; |
@@ -176,10 +177,10 @@ fill_template_candidate_array:
   sub       rax, rdx                ; | a = w - ARRAY_SIZE%w
 
   ; The current offset of the wheel.
-  mov       [rsp+WHEEL_OFFSET_OFFSET], dword 0
+  mov       [rsp+WHEEL_OFFSET_VAR], dword 0
   ; How much we need to decrement by to update the offset for the next segment.
   ; We choose decrement, as we can correct by checking if the value is negative.
-  mov       [rsp+WHEEL_DEC_OFFSET], eax
+  mov       [rsp+WHEEL_DEC_VAR], eax
 
 ; Find primes for sieving (in the first segment).
 collect_sieve_primes:
@@ -244,27 +245,28 @@ all_segments_loop:
 ; Find the primes in the next segment by sieving out all of the sieve primes.
 handle_segment:
   ; Copy enough 8-byte elements to hold an offset wheel.
-  mov       rax, [rsp+WHEEL_LEN_OFFSET] ; |
-  shr       rax, 3                      ; |
-  add       rax, ARRAY_SIZE/8+1         ; | a = (w+ARRAY_SIZE)/8+1
+  mov       rax, [rsp+WHEEL_LEN_VAR]   ; |
+  shr       rax, 3                     ; |
+  add       rax, ARRAY_SIZE/8+1        ; | a = (w+ARRAY_SIZE)/8+1
   memcpy    [rel template_candidate_array], \
             [rel candidate_array], \
             rax
 
   ; Increment the offset for alignment with the wheel.
-  xor       eax, eax                       ; |
-  mov       edx, [rsp+WHEEL_OFFSET_OFFSET] ; |
-  mov       ecx, [rsp+WHEEL_DEC_OFFSET]    ; |
-  sub       edx, ecx                       ; | offset -= dec
-  cmovl     rax, [rsp+WHEEL_LEN_OFFSET]    ; |
-  add       edx, eax                       ; | if (offset < 0) offset += w
-  mov       [rsp+WHEEL_OFFSET_OFFSET], edx ; |
+  xor       eax, eax                    ; |
+  mov       edx, [rsp+WHEEL_OFFSET_VAR] ; |
+  mov       ecx, [rsp+WHEEL_DEC_VAR]    ; |
+  sub       edx, ecx                    ; | offset -= dec
+  cmovl     rax, [rsp+WHEEL_LEN_VAR]    ; |
+  add       edx, eax                    ; | if (offset < 0) offset += w
+  mov       [rsp+WHEEL_OFFSET_VAR], edx ; |
 
   ; Align candidate_array with the wheel.
   ; (we have padding at the end so it's ok to go over).
   lea       r13, [rel candidate_array_end]
   add       r13, rdx
-  mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
+  ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE
+  mov       [r13], byte 1
 
   xor       r14, r14                ; x = 0
   lea       r11, [rel sieve_primes]
@@ -291,8 +293,8 @@ print_segment:
   xor       r14, r14                ; x = 0
   lea       rsi, [rel print_buffer] ; buf = print_buffer
   lea       rdi, [rel print_buffer]
-  mov       r8, [rsp+OUTPUT_LEN_OFFSET]
-  mov       r9, [rsp+NEXT_POW_OFFSET]
+  mov       r8, [rsp+OUTPUT_LEN_VAR]
+  mov       r9, [rsp+NEXT_POW_VAR]
 print_segment_loop:
   ; Keep looping until candidate_array[x-1] != 0
   ; Note: candidate_array has a sentinal, so we don't need to check the loop condition.
@@ -338,8 +340,8 @@ print_segment_itoa_loop:
   jmp       print_segment_loop
 print_segment_write:
   ; Restore local variables.
-  mov       [rsp+OUTPUT_LEN_OFFSET], r8
-  mov       [rsp+NEXT_POW_OFFSET], r9
+  mov       [rsp+OUTPUT_LEN_VAR], r8
+  mov       [rsp+NEXT_POW_VAR], r9
   ; If we have nothing to write, don't call _puts because it adds a newline.
   cmp       rsi, rdi
   je        print_segment_skip
@@ -350,11 +352,11 @@ print_segment_skip:
 
 ; Continue looping until we reach the search limit.
   add       rbx, ARRAY_SIZE
-  cmp       rbx, [rsp+SEARCH_LIMIT_OFFSET]
+  cmp       rbx, [rsp+SEARCH_LIMIT_VAR]
   jl        all_segments_loop
 
 exit:
-  add       rsp, LOCAL_VAR_BYTES
+  add       rsp, STACK_VAR_BYTES
   pop       rsp                     ; Fix up stack before returning
   xor       rax, rax                ; return 0
   ret

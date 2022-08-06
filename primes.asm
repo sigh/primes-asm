@@ -24,15 +24,15 @@ WHEEL_OFFSET_VAR    equ 44
 ; Save a bunch of callee saved registers for convinience.
 %macro debug 2
   ; Push the things we want to save.
+  push      r8
+  push      r9
+  push      r10
   push      r11
-  push      r12
-  push      r13
-  push      r14
-  push      r15
   push      rax
   push      rcx
   push      rdx
   push      rdi
+  push      rsi
   push      rsi
   ; Do the print
   mov       rsi, %2
@@ -40,15 +40,15 @@ WHEEL_OFFSET_VAR    equ 44
   call _printf
   ; Pop everything.
   pop       rsi
+  pop       rsi
   pop       rdi
   pop       rdx
   pop       rcx
   pop       rax
-  pop       r15
-  pop       r14
-  pop       r13
-  pop       r12
   pop       r11
+  pop       r10
+  pop       r9
+  pop       r8
 %endmacro
 
 %macro memcpy 3
@@ -295,6 +295,7 @@ print_segment:
   lea       rdi, [rel print_buffer]
   mov       r8, [rsp+OUTPUT_LEN_VAR]
   mov       r9, [rsp+NEXT_POW_VAR]
+  lea       r11, [rel digit_pair_lookup]
 print_segment_loop:
   ; Keep looping until candidate_array[x-1] != 0
   ; Note: candidate_array has a sentinal, so we don't need to check the loop condition.
@@ -313,29 +314,33 @@ print_segment_found:
   ; Convert a number to string.     ; | }
   ; Here we refer to p as b, as we destroy while outputting.
 print_segment_itoa:
-  lea       rsi, [rsi+r8-1]         ; | buf += output_len - 1
-  ; The start of the loop is copied here to reduce branching.
-  ; However, this means that single digit numbers will have a zero in front.
-  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
-  mul       r12                     ; | d:a = a * b
-  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
+  mov       r10, rsi
+  lea       rsi, [rsi+r8-2]         ; | buf += output_len - 2
+  jmp       print_segment_itoa_loop_entry
 print_segment_itoa_loop:
   ; Convert the last digit of b (r12) to a character (note: '0' = 48).
-  lea       rcx, [rdx+rdx*4-24]     ; c = a*5 - 24
-  shl       rcx, 1                  ; c *= 2 (c = a*10 - 48)
-  sub       r12, rcx                ; b -= c (b = b - (b/10)*10 + 48 = b%10 + 48)
-  mov       [rsi], r12b             ; *buf = b (add char to buffer)
-  sub       rsi, 1                  ; buf--
+  lea       rcx, [rdx+rdx*4]        ; |
+  lea       rcx, [rcx+rcx*4]        ; |
+  shl       rcx, 2                  ; | c = d*100
+  sub       r12, rcx                ; b -= c = b'%100
+  mov       r12w, [r11+r12*2]       ; |
+  mov       [rsi], r12w             ; | *buf = digit_pair_lookup[b]
+  sub       rsi, 2                  ; buf -= 2
   mov       r12, rdx                ; b = d (b = b'/10)
-  mov       rax, 0xcccccccccccccccd ; | a = ceil(2**64 * 8 / 10)
-  mul       r12                     ; | d:a = a * b
-  shr       rdx, 3                  ; | d = (d:a)/2**64/8 = b/10
+print_segment_itoa_loop_entry:
+  mov       rdx, r12                ; |
+  mov       rax, 0x28f5c28f5c28f5c3 ; |
+  shr       rdx, 2                  ; |
+  mul       rdx                     ; |
+  shr       rdx, 2                  ; | d = b/100
   jnz       print_segment_itoa_loop
-  ; Handle the final digit
-  or        r12d, '0'               ; |
-  mov       [rsi], r12b             ; | *buf = b%10 + 48 (add char to buffer)
+  ; Handle the final digits
+  mov       r12w, [r11+r12*2]
+  mov       [rsi], r12w
   ; Finalize
-  mov       [rsi+r8], byte `\n`     ; | *(buf+output_len) = '\n'
+  ; Note: We may write extra zeros, but it will be overwritten by the newline!
+  mov       rsi, r10
+  mov       [rsi-1], byte `\n`      ; | *(buf-1) = '\n'
   lea       rsi, [rsi+r8+1]         ; | buf += output_len + 1
   jmp       print_segment_loop
 print_segment_write:
@@ -345,7 +350,7 @@ print_segment_write:
   ; If we have nothing to write, don't call _puts because it adds a newline.
   cmp       rsi, rdi
   je        print_segment_skip
-  ; Overwrite the last newline with a null byte to terminate the string.
+  ; Add a newline to the end of the string.
   mov       [rsi-1], byte 0
   call _puts
 print_segment_skip:
@@ -373,6 +378,19 @@ format_u64:
 sep:
   db `----\n`, 0
 
+  align 16
+digit_pair_lookup:
+    dw 0x3030, 0x3130, 0x3230, 0x3330, 0x3430, 0x3530, 0x3630, 0x3730, 0x3830, 0x3930
+    dw 0x3031, 0x3131, 0x3231, 0x3331, 0x3431, 0x3531, 0x3631, 0x3731, 0x3831, 0x3931
+    dw 0x3032, 0x3132, 0x3232, 0x3332, 0x3432, 0x3532, 0x3632, 0x3732, 0x3832, 0x3932
+    dw 0x3033, 0x3133, 0x3233, 0x3333, 0x3433, 0x3533, 0x3633, 0x3733, 0x3833, 0x3933
+    dw 0x3034, 0x3134, 0x3234, 0x3334, 0x3434, 0x3534, 0x3634, 0x3734, 0x3834, 0x3934
+    dw 0x3035, 0x3135, 0x3235, 0x3335, 0x3435, 0x3535, 0x3635, 0x3735, 0x3835, 0x3935
+    dw 0x3036, 0x3136, 0x3236, 0x3336, 0x3436, 0x3536, 0x3636, 0x3736, 0x3836, 0x3936
+    dw 0x3037, 0x3137, 0x3237, 0x3337, 0x3437, 0x3537, 0x3637, 0x3737, 0x3837, 0x3937
+    dw 0x3038, 0x3138, 0x3238, 0x3338, 0x3438, 0x3538, 0x3638, 0x3738, 0x3838, 0x3938
+    dw 0x3039, 0x3139, 0x3239, 0x3339, 0x3439, 0x3539, 0x3639, 0x3739, 0x3839, 0x3939
+
 section .bss
 
   alignb 64
@@ -397,6 +415,7 @@ sieve_primes:
   ;        Storing it like this allows us to make the inner clearing loop smaller.
   resb ARRAY_SIZE*16
 
+  alignb 64
 print_buffer:
   ; 20 bytes is enough to store 2**64
   resb ARRAY_SIZE*20

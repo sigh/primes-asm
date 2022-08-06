@@ -17,6 +17,8 @@ SEARCH_LIMIT_OFFSET equ 8
 OUTPUT_LEN_OFFSET   equ 16
 NEXT_POW_OFFSET     equ 24
 WHEEL_LEN_OFFSET    equ 32
+WHEEL_DEC_OFFSET  equ 40
+WHEEL_OFFSET_OFFSET equ 44
 
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
@@ -24,10 +26,12 @@ WHEEL_LEN_OFFSET    equ 32
   ; Push the things we want to save.
   push      r11
   push      r12
+  push      r13
   push      r14
   push      r15
   push      rax
   push      rcx
+  push      rdx
   push      rdi
   push      rsi
   ; Do the print
@@ -37,10 +41,12 @@ WHEEL_LEN_OFFSET    equ 32
   ; Pop everything.
   pop       rsi
   pop       rdi
+  pop       rdx
   pop       rcx
   pop       rax
   pop       r15
   pop       r14
+  pop       r13
   pop       r12
   pop       r11
 %endmacro
@@ -134,8 +140,6 @@ clear_prime_multiples_%1:
   jmp collect_wheel_primes
 
 fill_template_candidate_array:
-  mov       [rsp+WHEEL_LEN_OFFSET], rbx
-
   ; Copy the wheel to the template.
   lea       rdx, [rel template_candidate_array]
   memcpy    [rel candidate_array], \
@@ -160,6 +164,22 @@ fill_template_candidate_array:
   mov       rcx, r14
   lea       rdi, [rdx+rbx+1]
   rep       stosb
+
+  ; Save the wheel offset.
+  mov       [rsp+WHEEL_LEN_OFFSET], rbx
+
+  ; Determine the parameters for updating the wheel offset.
+  xor       rdx, rdx                ; |
+  mov       rax, ARRAY_SIZE         ; |
+  idiv      rbx                     ; | d = ARRAY_SIZE%w
+  mov       rax, rbx                ; |
+  sub       rax, rdx                ; | a = w - ARRAY_SIZE%w
+
+  ; The current offset of the wheel.
+  mov       [rsp+WHEEL_OFFSET_OFFSET], dword 0
+  ; How much we need to decrement by to update the offset for the next segment.
+  ; We choose decrement, as we can correct by checking if the value is negative.
+  mov       [rsp+WHEEL_DEC_OFFSET], eax
 
 ; Find primes for sieving (in the first segment).
 collect_sieve_primes:
@@ -231,13 +251,17 @@ handle_segment:
             [rel candidate_array], \
             rax
 
-  ; Calculate offset for alignment with the wheel.
-  mov       rcx, [rsp+WHEEL_LEN_OFFSET] ; |
-  xor       rdx, rdx                    ; |
-  mov       rax, rbx                    ; |
-  idiv      rcx                         ; | d = offset%w
+  ; Increment the offset for alignment with the wheel.
+  xor       eax, eax                       ; |
+  mov       edx, [rsp+WHEEL_OFFSET_OFFSET] ; |
+  mov       ecx, [rsp+WHEEL_DEC_OFFSET]    ; |
+  sub       edx, ecx                       ; | offset -= dec
+  cmovl     rax, [rsp+WHEEL_LEN_OFFSET]    ; |
+  add       edx, eax                       ; | if (offset < 0) offset += w
+  mov       [rsp+WHEEL_OFFSET_OFFSET], edx ; |
+
   ; Align candidate_array with the wheel.
-  ; (we have padding at the end so it's  ok to go over).
+  ; (we have padding at the end so it's ok to go over).
   lea       r13, [rel candidate_array_end]
   add       r13, rdx
   mov       [r13], byte 1            ; Sentinal value so that candidate loops don't need to check for ARRAY_SIZE

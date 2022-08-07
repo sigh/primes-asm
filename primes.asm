@@ -149,17 +149,17 @@ collect_wheel_primes:
 ; This clears bits c+m*p from the segment_array at r13.
 ; Where c = rcx, p = r12
 %macro clear_prime_multiples 2
-  mov       esi, 1
+  mov       rsi, -2
+  align 16
 clear_prime_multiples_%1:
-  mov       edx, esi
+  mov       rdx, rsi
   mov       rax, rcx
-  shl       edx, cl                  ; Important: edx must be a 32-bit register.
-  shr       rax, 5
-  not       edx
-  and       [r13+rax*4], edx         ; segment_array[c/32] &= ~(1<<(c&32))
-  add       rcx, r12                 ; a += p
+  rol       dl, cl                  ; Important: register width MUST match shift amount.
+  shr       rax, 3
+  and       [r13+rax], dl           ; segment_array[c/8] &= ~(1<<(c&8))
+  add       rcx, r12                ; a += p
   cmp       rcx, %2
-  jl        clear_prime_multiples_%1 ; if (c < %2 (limit)) continue
+  jl        clear_prime_multiples_%1 ; if (c < (limit)) continue
 %endmacro
 
   clear_prime_multiples wheel_primes, ARRAY_SIZE_BITS

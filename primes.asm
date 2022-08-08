@@ -17,7 +17,8 @@ SEARCH_LIMIT_BITS      equ LIMIT/2
 SEGMENT_SIZE_BITS      equ SEGMENT_SIZE/2
 ARRAY_SIZE_BITS        equ SEGMENT_SIZE_BITS
 ARRAY_SIZE_BYTES       equ ARRAY_SIZE_BITS/8
-MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/2
+; The minimum SEGMENT_SIZE=128 which has density < 4.
+MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/4
 
 %if LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
 %error "Segment size is too small for search limit."
@@ -178,11 +179,10 @@ fill_template_array:
   xor       rdx, rdx                ; |
   mov       rax, SEGMENT_SIZE_BITS  ; |
   idiv      rbx                     ; | d = SEGMENT_SIZE_BITS%w
-  ; Fill the rest of the incomplete wheel at the end.
-  mov       r9, rdx                 ; | bit_offset = d
-  lea       r14, [rel template_segment_array]
-  lea       r14, [r14+ARRAY_SIZE_BYTES]
-  lea       r10, [rbx+rbx]
+  ; Fill another extra rotation of the wheel to allow for any offset.
+  mov       r9, rdx                 ; bit_offset = d
+  lea       r10, [r9+rbx]           ; max_bit_offset = bit_offset + w
+  lea       r14, [rel template_segment_array+ARRAY_SIZE_BYTES]
   ; We fill in 4 bytes at a time.
   ; Each iteration we read 8 bytes so that we always have slack to shift in from.
 fill_template_array_end:
@@ -196,17 +196,13 @@ fill_template_array_end:
                                     ; | We shifted with a 64-bit value, so this is safe.
   add       r14, 4                  ; Increment BYTE pointer
   add       r9, 32                  ; Increment BIT offset
-  cmp       r9, r10                 ; if (bit_offset < w) continue
+  cmp       r9, r10                 ; if (bit_offset < max_bit_offset) continue
   jle       fill_template_array_end
-
   ; Remove 1 again from the candidates.
   and       [r13], byte 0xFE
 
-
-  ; The current offset of the wheel.
-  mov       [rsp+WHEEL_OFFSET_BITS_VAR], dword 0
-
   ; Determine the parameters for updating the wheel offset.
+  mov       [rsp+WHEEL_OFFSET_BITS_VAR], dword 0
   mov       [rsp+WHEEL_SIZE_BITS_VAR], ebx
   ; How much we need to decrement by to update the offset for the next segment.
   ; We choose decrement, as we can correct by checking if the value is negative.
@@ -510,11 +506,11 @@ section .bss
 
 ; Template array to hold the prime wheel.
 ; This is used to initialize the segment_array before processing each segment.
-; Space is left at the end to be able to store an extra 2 rotations of a wheel.
-; TODO: Figure out why it can't just be one.
+; Space is left at the end to be able to store an extra rotations of a wheel
+; plus a byte for storing a sentinal value.
   alignb 64
 template_segment_array:
-  resb ARRAY_SIZE_BYTES*3
+  resb ARRAY_SIZE_BYTES*2+1
 
 ; The array used to sieving.
 ; Enough space for processing a single segment, with a buffer so that we can
@@ -522,11 +518,10 @@ template_segment_array:
   alignb 64
 segment_array:
   resb ARRAY_SIZE_BYTES
-segment_array_end:
 ; Array used for the initial segment.
 ; Also acts as a buffer for segment array, so it can be offset.
 initial_segment_array:
-  resb ARRAY_SIZE_BYTES ; buffer
+  resb ARRAY_SIZE_BYTES+1 ; buffer
 
 ; Primes used for sieving.
   alignb 64

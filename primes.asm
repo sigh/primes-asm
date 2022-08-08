@@ -5,14 +5,14 @@ global    _main
 extern    _puts
 extern    _printf
 
-%ifndef SQRT_SIZE
-%define SQRT_SIZE 65535
+%ifndef SEGMENT_HINT
+%define SEGMENT_HINT 65535
 %endif
 %ifndef LIMIT
 %define LIMIT SEGMENT_SIZE*SEGMENT_SIZE
 %endif
 ; Ensure segments are 8 byte aligned.
-SEGMENT_SIZE           equ ((SQRT_SIZE/128)+1)*128
+SEGMENT_SIZE           equ ((SEGMENT_HINT/128)+1)*128
 SEARCH_LIMIT_BITS      equ LIMIT/2
 SEGMENT_SIZE_BITS      equ SEGMENT_SIZE/2
 ARRAY_SIZE_BITS        equ SEGMENT_SIZE_BITS
@@ -150,6 +150,7 @@ collect_wheel_primes:
 ; Clear values f*p where f is even.
 ; This clears bits c+m*p from the segment_array at r13.
 ; Where c = rcx, p = r12
+; clear_prime_multiples <label> <limit>
 %macro clear_prime_multiples 2
   mov       rsi, -2
 clear_prime_multiples_%1:
@@ -336,7 +337,7 @@ handle_segment:
 
   xor       r14, r14                    ; x = 0 (index into sieve_primes)
   lea       r11, [rel sieve_primes]
-  align 16
+align 16
 handle_segment_loop:
   cmp       r14, r15
   jge       print_segment           ; if (x >= n) print_segment
@@ -494,7 +495,7 @@ format_sep:
   db `----\n`, 0
 
 ; Lookup table mapping n in [0, 100) to 2 character ascii strings.
-  align 16
+align 16
 digit_pair_lookup:
     db "0001020304050607080910111213141516171819"
     db "2021222324252627282930313233343536373839"

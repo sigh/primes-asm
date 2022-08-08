@@ -13,22 +13,23 @@ extern    _printf
 %endif
 ; Ensure segments are 8 byte aligned.
 SEGMENT_SIZE           equ ((SQRT_SIZE/128)+1)*128
-SEARCH_LIMIT           equ LIMIT
-ARRAY_SIZE_BITS        equ SEGMENT_SIZE/2
+SEARCH_LIMIT_BITS      equ LIMIT/2
+SEGMENT_SIZE_BITS      equ SEGMENT_SIZE/2
+ARRAY_SIZE_BITS        equ SEGMENT_SIZE_BITS
 ARRAY_SIZE_BYTES       equ ARRAY_SIZE_BITS/8
 MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/2
 
-%if SEARCH_LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
+%if LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
 %error "Segment size is too small for search limit."
 %endif
 
 STACK_VAR_BYTES       equ 48
-SEARCH_LIMIT_VAR      equ 8
+SEARCH_LIMIT_BITS_VAR equ 8
 OUTPUT_LEN_VAR        equ 16
 NEXT_POW_VAR          equ 24
-WHEEL_LEN_VAR         equ 32
-WHEEL_DEC_VAR         equ 36
-WHEEL_OFFSET_VAR      equ 40
+WHEEL_SIZE_BITS_VAR   equ 32
+WHEEL_DEC_BITS_VAR    equ 36
+WHEEL_OFFSET_BITS_VAR equ 40
 SIEVE_PRIME_BYTES_VAR equ 44
 
 ; debug <format> <value>
@@ -93,8 +94,8 @@ initialize:
   mov       [rsp+OUTPUT_LEN_VAR], rax
   mov       rax, 10
   mov       [rsp+NEXT_POW_VAR], rax
-  mov       rax, SEARCH_LIMIT
-  mov       [rsp+SEARCH_LIMIT_VAR], rax
+  mov       rax, SEARCH_LIMIT_BITS
+  mov       [rsp+SEARCH_LIMIT_BITS_VAR], rax
 
   ; Initialize the initial_segment_array with 1s.
   mov       rcx, ARRAY_SIZE_BYTES
@@ -110,7 +111,7 @@ initialize:
   lea       r8, [rel segment_array]
   mov       r12, 1                  ; p = 1 (current prime)
   xor       r14, r14                ; x = 0 (byte offset into initial_segment_array)
-  mov       rbx, 2                  ; w = 2 (wheel length)
+  mov       rbx, 2                  ; w = 1 (wheel_size_bits)
 
 ; Find the primes to use for the wheel.
 ; Keep collecting primes until their product is too large for the first segment.
@@ -126,8 +127,8 @@ collect_wheel_primes:
   ; Determine if we've found all the wheel primes.
   mov       rax, r12                ; |
   mul       rbx                     ; |
-  cmp       rax, SEGMENT_SIZE       ; |
-  jg        fill_template_array     ; | if (w*p > SEGMENT_SIZE)
+  cmp       rax, SEGMENT_SIZE_BITS  ; |
+  jg        fill_template_array     ; | if (w*p > SEGMENT_SIZE_BITS)
                                     ; |   fill_template_array
   mov       rbx, rax                ; w = w*p
   ; Unset the LSB.
@@ -150,7 +151,6 @@ collect_wheel_primes:
 ; Where c = rcx, p = r12
 %macro clear_prime_multiples 2
   mov       rsi, -2
-  align 16
 clear_prime_multiples_%1:
   mov       rdx, rsi
   mov       rax, rcx
@@ -162,7 +162,7 @@ clear_prime_multiples_%1:
   jl        clear_prime_multiples_%1 ; if (c < (limit)) continue
 %endmacro
 
-  clear_prime_multiples wheel_primes, ARRAY_SIZE_BITS
+  clear_prime_multiples wheel_primes, SEGMENT_SIZE_BITS
   ; NOTE: We don't store wheel primes in sieve_primes, as they are automatically
   ;       excluded by the wheel.
   jmp collect_wheel_primes
@@ -176,13 +176,13 @@ fill_template_array:
             ARRAY_SIZE_BYTES/8
   ; Determine how offset the wheel is.
   xor       rdx, rdx                ; |
-  mov       rax, SEGMENT_SIZE       ; |
-  idiv      rbx                     ; | d = SEGMENT_SIZE%w
+  mov       rax, SEGMENT_SIZE_BITS  ; |
+  idiv      rbx                     ; | d = SEGMENT_SIZE_BITS%w
   ; Fill the rest of the incomplete wheel at the end.
-  mov       r9, rdx                 ; |
-  shr       r9, 1                   ; | bit_offset = d/2
+  mov       r9, rdx                 ; | bit_offset = d
   lea       r14, [rel template_segment_array]
   lea       r14, [r14+ARRAY_SIZE_BYTES]
+  lea       r10, [rbx+rbx]
   ; We fill in 4 bytes at a time.
   ; Each iteration we read 8 bytes so that we always have slack to shift in from.
 fill_template_array_end:
@@ -196,24 +196,22 @@ fill_template_array_end:
                                     ; | We shifted with a 64-bit value, so this is safe.
   add       r14, 4                  ; Increment BYTE pointer
   add       r9, 32                  ; Increment BIT offset
-  cmp       r9, rbx                 ; | if (bit_offset < w) continue
+  cmp       r9, r10                 ; if (bit_offset < w) continue
   jle       fill_template_array_end
 
   ; Remove 1 again from the candidates.
   and       [r13], byte 0xFE
 
-  ; Save the wheel offset.
-  mov       [rsp+WHEEL_LEN_VAR], ebx
-
-  ; Determine the parameters for updating the wheel offset.
-  mov       rax, rbx                ; |
-  sub       rax, rdx                ; | a = w - SEGMENT_SIZE%w
 
   ; The current offset of the wheel.
-  mov       [rsp+WHEEL_OFFSET_VAR], dword 0
+  mov       [rsp+WHEEL_OFFSET_BITS_VAR], dword 0
+
+  ; Determine the parameters for updating the wheel offset.
+  mov       [rsp+WHEEL_SIZE_BITS_VAR], ebx
   ; How much we need to decrement by to update the offset for the next segment.
   ; We choose decrement, as we can correct by checking if the value is negative.
-  mov       [rsp+WHEEL_DEC_VAR], eax
+  sub       rbx, rdx                ; a = w - SEGMENT_SIZE_BITS%w
+  mov       [rsp+WHEEL_DEC_BITS_VAR], ebx
 
 ; Find primes for sieving (in the first segment).
   xor       r15, r15                  ; | n = 0 (offset into sieve_primes)
@@ -254,11 +252,10 @@ collect_sieve_primes:
   ; Shift c to account for the fact that the array only contains odd numbers.
   shr       rcx, 1                  ; | c /= 2
 
-  clear_prime_multiples sieve_primes, ARRAY_SIZE_BITS
+  clear_prime_multiples sieve_primes, SEGMENT_SIZE_BITS
 
-  lea       rcx, [rcx+rcx+1]        ; f = c*2+1
   mov       [r11+r15], rcx          ; |
-  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f, p)
+  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f/2, p)
   add       r15, 16                 ; n += 16
   jmp       collect_sieve_primes
 
@@ -294,15 +291,16 @@ collect_large_sieve_primes_loop:
   ; This prime is inside the segment, add it to sieved_primes.
   mov       rax, r12                ; |
   mul       rax                     ; | f = p*p (next factor to look at)
+  shr       rax, 1                  ; | a = f/2
   mov       [r11+r15], rax          ; |
-  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f, p)
+  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f/2, p)
   add       r15, 16                 ; n += 16
   jmp       collect_large_sieve_primes_loop
 
 ; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
 all_segments:
-  xor       rbx, rbx                ; segment_start = 0
+  xor       rbx, rbx                ; segment_start_bits = 0
   ; We want to use print_segment for the first segment as well.
   ; However, it doesn't handle single digit output so we do those manually and
   ; cross them off the list here.
@@ -318,51 +316,47 @@ handle_segment:
   mov       r15d, [rsp+SIEVE_PRIME_BYTES_VAR]
 
   ; Copy enough 8-byte elements to hold an offset wheel.
-  mov       eax, [rsp+WHEEL_LEN_VAR]   ; |
-  add       rax, SEGMENT_SIZE          ; |
-  shr       rax, 3+1+3                 ; | (8 bits * 8 bytes * 2)
-  add       rax, 1                     ; | Account for truncation
+  mov       eax, [rsp+WHEEL_SIZE_BITS_VAR] ; |
+  add       rax, SEGMENT_SIZE_BITS         ; |
+  shr       rax, 3+3                       ; | (8 bits * 8 bytes)
+  add       rax, 1                         ; | Padding for misalignment.
   memcpy_q  [rel template_segment_array], \
             [rel segment_array], \
             rax
 
   ; Increment the offset for alignment with the wheel.
-  xor       eax, eax                    ; |
-  mov       edx, [rsp+WHEEL_OFFSET_VAR] ; |
-  mov       ecx, [rsp+WHEEL_DEC_VAR]    ; |
-  sub       edx, ecx                    ; | offset -= dec
-  cmovl     eax, [rsp+WHEEL_LEN_VAR]    ; |
-  add       edx, eax                    ; | if (offset < 0) offset += w
-  mov       [rsp+WHEEL_OFFSET_VAR], edx ; |
+  xor       eax, eax                         ; |
+  mov       edx, [rsp+WHEEL_OFFSET_BITS_VAR] ; |
+  mov       ecx, [rsp+WHEEL_DEC_BITS_VAR]    ; |
+  sub       edx, ecx                         ; | offset -= dec
+  cmovl     eax, [rsp+WHEEL_SIZE_BITS_VAR]   ; |
+  add       edx, eax                         ; | if (offset < 0) offset += w
+  mov       [rsp+WHEEL_OFFSET_BITS_VAR], edx ; |
 
-  mov       r8, rdx                     ; |
-  shr       r8, 1                       ; | array_offset_bits
-  lea       r9, [r8+ARRAY_SIZE_BITS]    ; | array_end (where to stop clearing).
+  mov       r8, rbx                     ; |
+  sub       r8, rdx                     ; | array_start_bits = segment_start_bits-array_offset_bits
+  lea       r9, [rdx+ARRAY_SIZE_BITS]   ; | wheel_end_bits (where to stop clearing).
   lea       r13, [rel segment_array]
 
   xor       r14, r14                    ; x = 0 (index into sieve_primes)
   lea       r11, [rel sieve_primes]
+  align 16
 handle_segment_loop:
   cmp       r14, r15
   jge       print_segment           ; if (x >= n) print_segment
   mov       rcx, [r11+r14]          ; |
-  mov       r12d, [r11+r14+8]       ; | (f, p) = sieve_primes[x/16]
+  mov       r12d, [r11+r14+8]       ; | (f/2, p) = sieve_primes[x/16]
   add       r14, 16                 ; x += 16
-  ; TODO: combine r8 and rbx
-  sub       rcx, rbx                ; |
-  shr       rcx, 1                  ; | c = (f - segment_start)/2
+  sub       rcx, r8                 ; c = f/2-array_start_bits
   ; Check if this multiple is too large for the segment.
-  cmp       rcx, ARRAY_SIZE_BITS    ;
+  cmp       rcx, r9
   ; NOTE: We could do an extra check to see if we can finish this segment
   ; entirely, but currently that doesn't seem to help.
   jge       handle_segment_loop
 
-  add       rcx, r8
   clear_prime_multiples all_segments, r9
-  sub       rcx, r8                 ; |
-  shl       rcx, 1                  ; | Save the updated value of f back into
-  lea       rcx, [rcx+rbx+1]        ; | seive_primes
-  mov       [r11+r14-16], rcx       ; | f = 2*(c+segment_start+offset)
+  add       rcx, r8                 ; | Save the updated value of f back.
+  mov       [r11+r14-16], rcx       ; | f/2 = c+array_start_bits
   jmp       handle_segment_loop
 
 ; Print the primes in the current segment.
@@ -373,28 +367,36 @@ print_segment:
   lea       r11, [rel digit_pair_lookup]
   mov       r14, -8                   ; | x = -8 (byte index into initial_segment_array)
   xor       rdi, rdi
-  ; Update  segment_start, this lets us know when to stop printing.
-  add       rbx, SEGMENT_SIZE
   ; Determine the wheel alignment
-  mov       r15d, [rsp+WHEEL_OFFSET_VAR]
-  shr       r15, 1
-  lea rax, [rel template_segment_array]
+  mov       r15d, [rsp+WHEEL_OFFSET_BITS_VAR]
+  lea       rax, [rel template_segment_array]
   ; Move r13 forward so that the first 8-byte section is valid.
   ; Adjust r15 to account for this.
-  mov       rax, r15
+  mov       rax, r15                  ; a = wheel_offset_bits
   and       rax, -64                  ; align a at an 8-byte boundary.
   shr       rax, 3                    ; |
-  add       r13, rax                  ; |
-  shl       rax, 3                    ; | r13 += (a/8)
+  add       r13, rax                  ; | *sieve_array += a/8
+  shl       rax, 3                    ; |
+  sub       r15, rax                  ; | wheel_offset_bits -= a
   ; Zero out the invalid bits of r15 bits.
-  sub       r15, rax
   mov       rcx, r15
   shr       qword [r13], cl
   shl       qword [r13], cl
+  ; Calculate the global offset
+  sub       r15, rbx                  ; | global_offset = wheel_offset_bits - segment_start_bits
 
-  ; Put a sentinal at the end
+  ; Put a sentinal at the end to avoid an extra loop check.
   mov       [r13+ARRAY_SIZE_BYTES+8], byte 0xFF
 
+  ; Update segment_start_bits, this lets us know when to stop printing.
+  add       rbx, SEGMENT_SIZE_BITS            ; |
+  cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; |
+  cmovg     rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; | segment_limit = min(
+                                              ; |   segment_start_bits + segment_size_bits,
+                                              ; |   search_limit_bits
+                                              ; | )
+
+align 16
 print_segment_loop_inc:
   ; Find the next non-zero quad.
   ; Stop at one after ARRAY_SIZE_BYTES to account for misalignment.
@@ -412,17 +414,13 @@ print_segment_loop:
   xor       rdi, rdi
 print_segment_found:
   ; We found a prime! Figure out the value.
-  mov       rax, r14                    ; |
-  shl       rax, 3                      ; | convert from byte count to bit count.
-  add       rcx, rax                    ; |
-  sub       rcx, r15                    ; |
-  lea       rcx, [rcx+rcx+1]            ; |
-  lea       r12, [rcx+rbx-SEGMENT_SIZE] ; |p = (c+x*8-wheel_offset)*2+1+segment_start
-  cmp       r12, rbx
-  jge       print_segment_write
-  ; TODO: Combine this with the rbx check.
-  cmp       r12, [rsp+SEARCH_LIMIT_VAR]
-  jge       print_segment_write
+  mov       rax, r14                         ; |
+  shl       rax, 3                           ; | convert from byte count to bit count.
+  add       rcx, rax                         ; |
+  sub       rcx, r15                         ; | c = c+x*8-wheel_offset_bits+segment_start_bits
+  cmp       rcx, rbx                         ; |
+  jge       print_segment_write              ; | if (c > segment_limit) print_segment_write
+  lea       r12, [rcx+rcx+1]                 ; | p = c*2+1
   ; Update output length variables.
   cmp       r12, r9                 ; | if (p >= next_pow) {
   jl        print_segment_itoa      ; |
@@ -476,7 +474,7 @@ print_segment_write:
 print_segment_skip:
 
 ; Continue looping until we reach the search limit.
-  cmp       rbx, [rsp+SEARCH_LIMIT_VAR]
+  cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]
   jl        all_segments_loop
 
 exit:
@@ -533,7 +531,7 @@ initial_segment_array:
 ; Primes used for sieving.
   alignb 64
 sieve_primes:
-  ; Store pairs (f: u64, p: u32) where:
+  ; Store pairs (f/2: u64, p: u32) where:
   ;  - f is the next candidate to be removed
   ;  - p is the prime
   ;  NOTE: It's difficult to find a way to represent f so that it will reliably

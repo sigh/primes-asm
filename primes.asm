@@ -414,10 +414,8 @@ print_segment:
   vmovq     r11, xmm1                 ; prev_prime
   mov       r8, [rsp+OUTPUT_LEN_VAR]
   mov       r9, [rsp+NEXT_POW_VAR]
-  mov       r14, -8                   ; | x = -8 (byte index into initial_segment_array)
   ; Determine the wheel alignment
   mov       r15d, [rsp+WHEEL_OFFSET_BITS_VAR]
-  lea       rax, [rel template_segment_array]
   ; Move r13 forward so that the first 8-byte section is valid.
   ; Adjust r15 to account for this.
   mov       rax, r15                  ; a = wheel_offset_bits
@@ -425,9 +423,9 @@ print_segment:
   shr       rax, 3                    ; |
   add       r13, rax                  ; | *sieve_array += a/8
   shl       rax, 3                    ; |
-  sub       r15, rax                  ; | wheel_offset_bits -= a
   ; Zero out the invalid bits of r15 bits.
   mov       rcx, r15
+  sub       rcx, rax                  ; | byte_offset_bits = wheel_offset_bits-a
   shr       qword [r13], cl
   shl       qword [r13], cl
   ; Calculate the global offset
@@ -445,26 +443,28 @@ print_segment:
                                               ; | )
 
   xor       rdx, rdx
+  sub       r13, 8
 align 16
 print_segment_loop_inc:
   ; Find the next non-zero quad.
-  add       r14, 8
+  add       r13, 8
 print_segment_loop:
   ; NOTE: rdx must be cleared before calling print_segment_loop
-  add       rdx, [r13+r14]
+  add       rdx, [r13]
   jz        print_segment_loop_inc
   ; Find the LSB.
   bsf       rcx, rdx
   ; Unset the LSB.
   lea       rax, [rdx-1]
   and       rax, rdx
-  mov       [r13+r14], rax
+  mov       [r13], rax
 print_segment_found:
   ; We found a prime! Figure out the value.
-  mov       rax, r14                         ; |
-  shl       rax, 3                           ; | convert from byte count to bit count.
-  add       rcx, rax                         ; |
-  sub       rcx, r15                         ; | c = c+x*8-wheel_offset_bits+segment_start_bits
+  lea       rax, [rel segment_array]         ; | (let x be the current loop iteration in bytes)
+  sub       rax, r13                         ; | a = -(x+wheel_offset_bits/8)
+  shl       rax, 3                           ; | Convert from byte count to bit count.
+  sub       rcx, rax                         ; |
+  sub       rcx, r15                         ; | c = c+x*8+segment_start_bits
   cmp       rcx, rbx                         ; |
   jge       print_segment_write              ; | if (c > segment_limit) print_segment_write
   lea       r12, [rcx+rcx+1]                 ; | p = c*2+1

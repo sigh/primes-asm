@@ -19,6 +19,9 @@ ARRAY_SIZE_BITS        equ SEGMENT_SIZE_BITS
 ARRAY_SIZE_BYTES       equ ARRAY_SIZE_BITS/8
 ; The minimum SEGMENT_SIZE=128 which has density < 4.
 MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/4
+; This is enough for any 64-bit value.
+; See https://en.wikipedia.org/wiki/Prime_gap for table.
+MAX_PRIME_GAP          equ 1200
 
 %if LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
 %error "Segment size is too small for search limit."
@@ -73,11 +76,35 @@ SIEVE_PRIME_BYTES_VAR equ 44
   rep movsq
 %endmacro
 
+%macro bcd_add 2
+  ; TODO: 64-bit
+  ; TODO lea instead of double add.
+  add       %1, %2
+  add       %1, 0xF6F6F6F6
+  mov       %2, %1
+  and       %2, 0x60606060
+  shr       %2, 4
+  and       %1, 0x0F0F0F0F
+  sub       %1, %2
+%endmacro
+
 section   .text
 
 _main:
   push      rsp                     ; Required for alignment
   sub       rsp, STACK_VAR_BYTES
+
+build_bcd_lookup:
+  lea       rdi, [rel bcd_lookup]
+  xor       rcx, rcx
+  xor       rax, rax
+build_bcd_lookup_loop:
+  mov       [rdi+rcx*4], eax
+  mov       ebx, 1
+  bcd_add   eax, ebx
+  add       rcx, 1
+  cmp       rcx, MAX_PRIME_GAP
+  jl        build_bcd_lookup_loop
 
 initialize:
   ; Write out the first primes directly.
@@ -534,6 +561,11 @@ sieve_primes:
   ;        fit in 32 bits.
   ;        Storing it like this allows us to make the inner clearing loop smaller.
   resb MAX_PRIMES_PER_SEGMENT*16
+
+
+  alignb 16
+bcd_lookup:
+  resd MAX_PRIME_GAP
 
 ; Buffer space to write the output string.
   alignb 64

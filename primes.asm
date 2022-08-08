@@ -24,10 +24,16 @@ MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/4
 MAX_PRIME_GAP          equ 1200
 
 %if LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
-%error "Segment size is too small for search limit."
+%error "LIMIT is too large for segment size. Set a larger SEGMENT_HINT."
 %endif
 
-STACK_VAR_BYTES       equ 48
+%if LIMIT > 10000000000000000
+%error "LIMIT is too large. Max is 10^16."
+%endif
+
+; Stack size.
+STACK_VAR_BYTES       equ 80
+; Stack offsets for stack variables.
 SEARCH_LIMIT_BITS_VAR equ 8
 OUTPUT_LEN_VAR        equ 16
 NEXT_POW_VAR          equ 24
@@ -35,19 +41,8 @@ WHEEL_SIZE_BITS_VAR   equ 32
 WHEEL_DEC_BITS_VAR    equ 36
 WHEEL_OFFSET_BITS_VAR equ 40
 SIEVE_PRIME_BYTES_VAR equ 44
-
-%macro xmm_save 0
-  ; Set flags to save all registers.
-  mov       rax, -1
-  mov       rdx, -1
-  xsave     [rel xmm_save_space]
-%endmacro
-%macro xmm_restore 0
-  ; Set flags to restore all registers.
-  mov       rax, -1
-  mov       rdx, -1
-  xrstor    [rel xmm_save_space]
-%endmacro
+BCD_BUFFER_16u8_VAR   equ 48  ; 16 byte Binary-Coded Decimal output buffer.
+PREV_PRIME_VAR        equ 64
 
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
@@ -63,13 +58,11 @@ SIEVE_PRIME_BYTES_VAR equ 44
   push      rdi
   push      rsi
   push      rsi
-  xmm_save
   ; Do the print
   mov       rsi, %2
   lea       rdi, [rel format_%1]
   call _printf
   ; Pop everything.
-  xmm_restore
   pop       rsi
   pop       rsi
   pop       rdi
@@ -91,22 +84,20 @@ SIEVE_PRIME_BYTES_VAR equ 44
   rep movsq
 %endmacro
 
-; Adds 2 Binary-Coded Decimal numbers:
-;  dst += src
+; Adds Binary-Coded Decimal numbers.
 ; scratch is used as a scratch register.
-; bcd_add <dst> <src> <scratch>
+; bcd_add <dst> <src> <scratch2>
 %macro bcd_add 3
-  ; TODO lea instead of double add.
-  add       %1, %2
-  mov       %3, 0xF6F6F6F6F6F6F6F6
-  add       %1, %3
+  add       %1, %2                  ; Binary addition
+  mov       %3, 0xF6F6F6F6F6F6F6F6  ; |
+  add       %1, %3                  ; | Propogate carries into the next byte.
   mov       %2, %1
-  mov       %3, 0x6060606060606060
-  and       %2, %3
-  shr       %2, 4
-  mov       %3, 0x0F0F0F0F0F0F0F0F
-  and       %1, %3
-  sub       %1, %2
+  mov       %3, 0x6060606060606060  ; |
+  and       %2, %3                  ; |
+  shr       %2, 4                   ; | Fix up the non-carried parts.
+  mov       %3, 0x0F0F0F0F0F0F0F0F  ; |
+  and       %1, %3                  ; | Isolate the carried parts.
+  sub       %1, %2                  ; Combine carried and non-carried.
 %endmacro
 
 section   .text
@@ -115,17 +106,19 @@ _main:
   push      rsp                     ; Required for alignment
   sub       rsp, STACK_VAR_BYTES
 
-build_bcd_lookup:
+; Create a lookup table for the Binary-Coded Decimal representation of n for
+; all n up to MAX_PRIME_GAP.
+; This is used to look up the BCD for prime deltas.
   lea       rdi, [rel bcd_lookup]
-  xor       rcx, rcx
-  xor       rax, rax
-build_bcd_lookup_loop:
-  mov       [rdi+rcx*4], eax
-  mov       rbx, 1
-  bcd_add   rax, rbx, rdx
-  add       rcx, 1
-  cmp       rcx, MAX_PRIME_GAP
-  jl        build_bcd_lookup_loop
+  xor       rcx, rcx                ; n = 0
+  xor       rax, rax                ; bcd_n = 0
+build_bcd_lookup:
+  mov       [rdi+rcx*4], eax        ; bcd_lookup[n] = bcd_n
+  mov       rbx, 1                  ; |
+  bcd_add   rax, rbx, rdx           ; | bcd_n += bcd(1)
+  add       rcx, 1                  ; n += 1
+  cmp       rcx, MAX_PRIME_GAP      ; |
+  jl        build_bcd_lookup        ; | if (n < MAX_PRIME_GAP) build_bcd_lookup
 
 initialize:
   ; Write out the first primes directly.
@@ -345,9 +338,12 @@ collect_large_sieve_primes_loop:
 ; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
 all_segments:
+  xor       rax, rax
+  ; Initialize all to output helpers to 0.
+  mov       [rsp+BCD_BUFFER_16u8_VAR], rax
+  mov       [rsp+BCD_BUFFER_16u8_VAR+8], rax
+  mov       [rsp+PREV_PRIME_VAR], rax
   xor       rbx, rbx                ; segment_start_bits = 0
-  vmovq     xmm0, rbx               ; output_buffer = 0
-  vmovq     xmm1, rbx               ; prev_prime = 0
   ; We want to use print_segment for the first segment as well.
   ; However, it doesn't handle single digit output so we do those manually and
   ; cross them off the list here.
@@ -408,10 +404,12 @@ handle_segment_loop:
 
 ; Print the primes in the current segment.
 print_segment:
-  lea       rsi, [rel print_buffer]   ; buf = print_buffer
+  lea       rsi, [rel print_buffer]          ; buf = print_buffer
   lea       r10, [rel bcd_lookup]
-  vmovq     rdi, xmm0                 ; bcd_buffer
-  vmovq     r11, xmm1                 ; prev_prime
+  ; Load registers from stack variables.
+  mov       r11, [rsp+BCD_BUFFER_16u8_VAR]   ; |
+  mov       r14, [rsp+BCD_BUFFER_16u8_VAR+8] ; | bcd_buffer
+  mov       rdi, [rsp+PREV_PRIME_VAR]
   mov       r8, [rsp+OUTPUT_LEN_VAR]
   mov       r9, [rsp+NEXT_POW_VAR]
   ; Determine the wheel alignment
@@ -477,42 +475,88 @@ print_segment_found:
   ; Here we refer to p as b, as we destroy while outputting.
 print_segment_itoa:
   mov       rdx, r12                ; | delta = p
-  sub       rdx, r11                ; | delta = p-prev
-  and       rdx, 1023               ; | TODO: Remove (limit deltas)
-  mov       r11, r12                ; | p = prev
-  mov       eax, [r10+rdx*4]        ; |
-  bcd_add   rdi, rax, rdx           ; | bcd_buffer += bcd[delta]
-  mov       rax, rdi                ; |
-  bswap     rax                     ; | a = bcd_buffer in output byte order.
+  sub       rdx, rdi                ; | delta = p-prev
+  mov       rdi, r12                ; | p = prev
+  mov       eax, [r10+rdx*4]        ; bcd_delta = bcd_lookup[delta]
+  ; We branch based on whether the resulting string will fit into a single register
+  ; (i.e. 8 decimal digits) or if it needs 2.
+  cmp       r8, 8
+  jle print_segment_itoa_small
+print_segment_itoa_large:
+  ; Do a 16-byte BCD addition. bcd_buffer += bcd_delta
+  add       r11, rax                ; |
+  mov       rcx, 0xF6F6F6F6F6F6F6F6 ; |
+  add       r11, rcx                ; |
+  adc       r14, rcx                ; | Add with carry
+  mov       rax, r11
+  mov       rdx, r14
+  mov       rcx, 0x6060606060606060 ; |
+  and       rax, rcx                ; |
+  and       rdx, rcx                ; |
+  shr       rax, 4                  ; |
+  shr       rdx, 4                  ; | Fix non-carried bytes
+  mov       rcx, 0x0F0F0F0F0F0F0F0F ; |
+  and       r11, rcx                ; |
+  and       r14, rcx                ; |
+  sub       r11, rax                ; |
+  sub       r14, rdx                ; | Fix the carried bytes
+  ; Convert from BCD to ASCII
+  mov       rax, r11                ; |
+  mov       rdx, r14                ; |
+  bswap     rax                     ; |
+  bswap     rdx                     ; | a:d = ascii_output (bcd_buffer in output byte order)
   lea       rcx, [r8*8]             ; |
-  rol       rax, cl                 ; | Shift number to the front
-  mov       rcx,  0x3030303030303030; |
-  or        rax, rcx                ; | Add 48 to convert to ascii
-  mov       [rsi], rax              ; | Store all bytes but only update
-  mov       [rsi+r8], byte `\n`     ; | buf enough to cover the number.
-  lea       rsi, [rsi+r8+1]         ; |
-  ; Clear rdx to prefer for the print_segment loop.
+  neg       rcx                     ; |
+  shrd      rdx, rax, cl            ; |
+  shr       rax, cl                 ; | Shift out leading 0 bytes in ascii_output
+  mov       rcx, 0x3030303030303030 ; |
+  or        rax, rcx                ; |
+  or        rdx, rcx                ; | Add '0' to ascii_output chars
+  ; Write to output buffer
+  mov       [rsi], rdx              ; |
+  mov       [rsi+8], rax            ; | *buf = ascii_output (16 bytes)
+  mov       [rsi+r8], byte `\n`     ; |
+  lea       rsi, [rsi+r8+1]         ; | Adjust buf so that only the desired
+                                    ; | number of digits is kept.
+  ; Clear rdx to prepare for the print_segment loop.
+  xor       rdx, rdx
+  jmp print_segment_loop
+print_segment_itoa_small:
+  ; Do an 8-byte BCD addition.
+  bcd_add   r11, rax, rdx           ; bcd_buffer += bcd_delta
+  ; Convert BCD to ASCII
+  mov       rax, r11                ; |
+  bswap     rax                     ; |  ascii_output = bcd_buffer in output byte order
+  lea       rcx, [r8*8]             ; |
+  rol       rax, cl                 ; | Shift out leading 0 bytes in ascii_output
+  mov       rcx, 0x3030303030303030 ; |
+  or        rax, rcx                ; | Add '0' to ascii_output chars
+  ; Write to output buffer
+  mov       [rsi], rax              ; *buf = ascii_output (8 bytes)
+  mov       [rsi+r8], byte `\n`     ; |
+  lea       rsi, [rsi+r8+1]         ; | Adjust buf so that only the desired
+                                    ; | number of digits is kept.
+  ; Clear rdx to prepare for the print_segment loop.
   xor       rdx, rdx
   jmp print_segment_loop
 
 print_segment_write:
-  ; Update local variables.
+  ; Save registers to stack variables.
   mov       [rsp+OUTPUT_LEN_VAR], r8
   mov       [rsp+NEXT_POW_VAR], r9
-  vmovq     xmm0, rdi
-  vmovq     xmm1, r11
+  mov       [rsp+BCD_BUFFER_16u8_VAR], r11
+  mov       [rsp+BCD_BUFFER_16u8_VAR+8], r14
+  mov       [rsp+PREV_PRIME_VAR], rdi
   ; If we have nothing to write, don't call _puts because it adds a newline.
   lea       rdi, [rel print_buffer]
   cmp       rsi, rdi
   je        print_segment_skip
 
-  xmm_save
 %ifndef QUIET
   ; Add a null byte to terminate the string.
   mov       [rsi-1], byte 0
   call _puts
 %endif
-  xmm_restore
 print_segment_skip:
 
 ; Continue looping until we reach the search limit.
@@ -538,15 +582,6 @@ format_hex:
   db `> 0x%lx\n`, 0
 format_sep:
   db `----\n`, 0
-
-; Lookup table mapping n in [0, 100) to 2 character ascii strings.
-align 16
-digit_pair_lookup:
-    db "0001020304050607080910111213141516171819"
-    db "2021222324252627282930313233343536373839"
-    db "4041424344454647484950515253545556575859"
-    db "6061626364656667686970717273747576777879"
-    db "8081828384858687888990919293949596979899"
 
 section .bss
 
@@ -580,17 +615,15 @@ sieve_primes:
   ;        Storing it like this allows us to make the inner clearing loop smaller.
   resb MAX_PRIMES_PER_SEGMENT*16
 
-
+; Lookup table for the Binary-Coded Decimal representation of n where each
+; decimal digit is 1 byte.
+; Each n is stored as 4 bytes as MAX_PRIME_GAP is at most 4 decimal digits.
   alignb 16
 bcd_lookup:
   resd MAX_PRIME_GAP
 
-  alignb 64
-xmm_save_space:
-  resb 1024
-
 ; Buffer space to write the output string.
   alignb 64
 print_buffer:
-  ; 20 bytes is enough to store 2**64
-  resb MAX_PRIMES_PER_SEGMENT*20
+  ; The max size of each entry is 16 digits + a newline.
+  resb MAX_PRIMES_PER_SEGMENT*17

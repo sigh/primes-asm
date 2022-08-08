@@ -36,6 +36,19 @@ WHEEL_DEC_BITS_VAR    equ 36
 WHEEL_OFFSET_BITS_VAR equ 40
 SIEVE_PRIME_BYTES_VAR equ 44
 
+%macro xmm_save 0
+  ; Set flags to save all registers.
+  mov       rax, -1
+  mov       rdx, -1
+  xsave     [rel xmm_save_space]
+%endmacro
+%macro xmm_restore 0
+  ; Set flags to restore all registers.
+  mov       rax, -1
+  mov       rdx, -1
+  xrstor    [rel xmm_save_space]
+%endmacro
+
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
 %macro debug 2
@@ -50,11 +63,13 @@ SIEVE_PRIME_BYTES_VAR equ 44
   push      rdi
   push      rsi
   push      rsi
+  xmm_save
   ; Do the print
   mov       rsi, %2
   lea       rdi, [rel format_%1]
   call _printf
   ; Pop everything.
+  xmm_restore
   pop       rsi
   pop       rsi
   pop       rdi
@@ -76,15 +91,21 @@ SIEVE_PRIME_BYTES_VAR equ 44
   rep movsq
 %endmacro
 
-%macro bcd_add 2
-  ; TODO: 64-bit
+; Adds 2 Binary-Coded Decimal numbers:
+;  dst += src
+; scratch is used as a scratch register.
+; bcd_add <dst> <src> <scratch>
+%macro bcd_add 3
   ; TODO lea instead of double add.
   add       %1, %2
-  add       %1, 0xF6F6F6F6
+  mov       %3, 0xF6F6F6F6F6F6F6F6
+  add       %1, %3
   mov       %2, %1
-  and       %2, 0x60606060
+  mov       %3, 0x6060606060606060
+  and       %2, %3
   shr       %2, 4
-  and       %1, 0x0F0F0F0F
+  mov       %3, 0x0F0F0F0F0F0F0F0F
+  and       %1, %3
   sub       %1, %2
 %endmacro
 
@@ -100,8 +121,8 @@ build_bcd_lookup:
   xor       rax, rax
 build_bcd_lookup_loop:
   mov       [rdi+rcx*4], eax
-  mov       ebx, 1
-  bcd_add   eax, ebx
+  mov       rbx, 1
+  bcd_add   rax, rbx, rdx
   add       rcx, 1
   cmp       rcx, MAX_PRIME_GAP
   jl        build_bcd_lookup_loop
@@ -325,6 +346,8 @@ collect_large_sieve_primes_loop:
 ; rest.
 all_segments:
   xor       rbx, rbx                ; segment_start_bits = 0
+  vmovq     xmm0, rbx               ; output_buffer = 0
+  vmovq     xmm1, rbx               ; prev_prime = 0
   ; We want to use print_segment for the first segment as well.
   ; However, it doesn't handle single digit output so we do those manually and
   ; cross them off the list here.
@@ -386,11 +409,12 @@ handle_segment_loop:
 ; Print the primes in the current segment.
 print_segment:
   lea       rsi, [rel print_buffer]   ; buf = print_buffer
+  lea       r10, [rel bcd_lookup]
+  vmovq     rdi, xmm0                 ; bcd_buffer
+  vmovq     r11, xmm1                 ; prev_prime
   mov       r8, [rsp+OUTPUT_LEN_VAR]
   mov       r9, [rsp+NEXT_POW_VAR]
-  lea       r11, [rel digit_pair_lookup]
   mov       r14, -8                   ; | x = -8 (byte index into initial_segment_array)
-  xor       rdi, rdi
   ; Determine the wheel alignment
   mov       r15d, [rsp+WHEEL_OFFSET_BITS_VAR]
   lea       rax, [rel template_segment_array]
@@ -420,22 +444,21 @@ print_segment:
                                               ; |   search_limit_bits
                                               ; | )
 
+  xor       rdx, rdx
 align 16
 print_segment_loop_inc:
   ; Find the next non-zero quad.
-  ; Stop at one after ARRAY_SIZE_BYTES to account for misalignment.
   add       r14, 8
 print_segment_loop:
-  add       rdi, [r13+r14]
+  ; NOTE: rdx must be cleared before calling print_segment_loop
+  add       rdx, [r13+r14]
   jz        print_segment_loop_inc
   ; Find the LSB.
-  bsf       rcx, rdi
+  bsf       rcx, rdx
   ; Unset the LSB.
-  lea       rax, [rdi-1]
-  and       rax, rdi
+  lea       rax, [rdx-1]
+  and       rax, rdx
   mov       [r13+r14], rax
-  ; Clear rdi for the next iteration.
-  xor       rdi, rdi
 print_segment_found:
   ; We found a prime! Figure out the value.
   mov       rax, r14                         ; |
@@ -453,48 +476,43 @@ print_segment_found:
   ; Convert a number to string.     ; | }
   ; Here we refer to p as b, as we destroy while outputting.
 print_segment_itoa:
-  mov       r10, rsi
-  lea       rsi, [rsi+r8-2]         ; | buf += output_len - 2
-  jmp       print_segment_itoa_loop_entry
-print_segment_itoa_loop:
-  ; Convert the last digit of b (r12) to a character (note: '0' = 48).
-  lea       rcx, [rdx+rdx*4]        ; |
-  lea       rcx, [rcx+rcx*4]        ; |
-  shl       rcx, 2                  ; | c = d*100
-  sub       r12, rcx                ; b -= c = b'%100
-  mov       r12w, [r11+r12*2]       ; |
-  mov       [rsi], r12w             ; | *buf = digit_pair_lookup[b]
-  sub       rsi, 2                  ; buf -= 2
-  mov       r12, rdx                ; b = d (b = b'/10)
-print_segment_itoa_loop_entry:
-  mov       rdx, r12                ; |
-  mov       rax, 0x28f5c28f5c28f5c3 ; |
-  shr       rdx, 2                  ; |
-  mul       rdx                     ; |
-  shr       rdx, 2                  ; | d = b/100
-  jnz       print_segment_itoa_loop
-  ; Handle the final digits
-  mov       r12w, [r11+r12*2]
-  mov       [rsi], r12w
-  ; Finalize
-  ; Note: We may write extra zeros, but it will be overwritten by the newline!
-  mov       rsi, r10
-  mov       [rsi-1], byte `\n`      ; | *(buf-1) = '\n'
-  lea       rsi, [rsi+r8+1]         ; | buf += output_len + 1
-  jmp       print_segment_loop
+  mov       rdx, r12                ; | delta = p
+  sub       rdx, r11                ; | delta = p-prev
+  and       rdx, 1023               ; | TODO: Remove (limit deltas)
+  mov       r11, r12                ; | p = prev
+  mov       eax, [r10+rdx*4]        ; |
+  bcd_add   rdi, rax, rdx           ; | bcd_buffer += bcd[delta]
+  mov       rax, rdi                ; |
+  bswap     rax                     ; | a = bcd_buffer in output byte order.
+  lea       rcx, [r8*8]             ; |
+  rol       rax, cl                 ; | Shift number to the front
+  mov       rcx,  0x3030303030303030; |
+  or        rax, rcx                ; | Add 48 to convert to ascii
+  mov       [rsi], rax              ; | Store all bytes but only update
+  mov       [rsi+r8], byte `\n`     ; | buf enough to cover the number.
+  lea       rsi, [rsi+r8+1]         ; |
+  ; Clear rdx to prefer for the print_segment loop.
+  xor       rdx, rdx
+  jmp print_segment_loop
+
 print_segment_write:
-  ; Restore local variables.
+  ; Update local variables.
   mov       [rsp+OUTPUT_LEN_VAR], r8
   mov       [rsp+NEXT_POW_VAR], r9
+  vmovq     xmm0, rdi
+  vmovq     xmm1, r11
   ; If we have nothing to write, don't call _puts because it adds a newline.
   lea       rdi, [rel print_buffer]
   cmp       rsi, rdi
   je        print_segment_skip
+
+  xmm_save
+%ifndef QUIET
   ; Add a null byte to terminate the string.
   mov       [rsi-1], byte 0
-%ifndef QUIET
   call _puts
 %endif
+  xmm_restore
 print_segment_skip:
 
 ; Continue looping until we reach the search limit.
@@ -566,6 +584,10 @@ sieve_primes:
   alignb 16
 bcd_lookup:
   resd MAX_PRIME_GAP
+
+  alignb 64
+xmm_save_space:
+  resb 1024
 
 ; Buffer space to write the output string.
   alignb 64

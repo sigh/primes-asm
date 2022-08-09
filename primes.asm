@@ -19,7 +19,7 @@ ARRAY_SIZE_BITS        equ SEGMENT_SIZE_BITS
 ARRAY_SIZE_BYTES       equ ARRAY_SIZE_BITS/8
 ; The minimum SEGMENT_SIZE=128 which has density < 4.
 MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/4
-; This is enough for any 64-bit value.
+; This is enough for any value less than 10^16.
 ; See https://en.wikipedia.org/wiki/Prime_gap for table.
 MAX_PRIME_GAP          equ 1200
 
@@ -27,6 +27,7 @@ MAX_PRIME_GAP          equ 1200
 %error "LIMIT is too large for segment size. Set a larger SEGMENT_HINT."
 %endif
 
+; Our limit is 10^16 because our output routine can only deal with 16 digits.
 %if LIMIT > 10000000000000000
 %error "LIMIT is too large. Max is 10^16."
 %endif
@@ -107,16 +108,16 @@ _main:
   sub       rsp, STACK_VAR_BYTES
 
 ; Create a lookup table for the Binary-Coded Decimal representation of n for
-; all n up to MAX_PRIME_GAP.
-; This is used to look up the BCD for prime deltas.
-  lea       rdi, [rel bcd_lookup]
+; even n up to MAX_PRIME_GAP.
+; This is used to look up the BCD for prime deltas. All deltas must be even.
+  lea       rdi, [rel bcd_even_lookup]
   xor       rcx, rcx                ; n = 0
   xor       rax, rax                ; bcd_n = 0
 build_bcd_lookup:
-  mov       [rdi+rcx*4], eax        ; bcd_lookup[n] = bcd_n
-  mov       rbx, 1                  ; |
-  bcd_add   rax, rbx, rdx           ; | bcd_n += bcd(1)
-  add       rcx, 1                  ; n += 1
+  mov       [rdi+rcx*2], eax        ; bcd_even_lookup[n/2] = bcd_n
+  mov       rbx, 2                  ; |
+  bcd_add   rax, rbx, rdx           ; | bcd_n += bcd(2)
+  add       rcx, 2                  ; n += 2
   cmp       rcx, MAX_PRIME_GAP      ; |
   jl        build_bcd_lookup        ; | if (n < MAX_PRIME_GAP) build_bcd_lookup
 
@@ -339,10 +340,11 @@ collect_large_sieve_primes_loop:
 ; rest.
 all_segments:
   xor       rax, rax
-  ; Initialize all to output helpers to 0.
-  mov       [rsp+BCD_BUFFER_16u8_VAR], rax
-  mov       [rsp+BCD_BUFFER_16u8_VAR+8], rax
-  mov       [rsp+PREV_PRIME_VAR], rax
+  mov       rcx, 1
+  ; Initialize prev_prime to 1 so that all deltas are even.
+  mov       [rsp+BCD_BUFFER_16u8_VAR], rcx    ; |
+  mov       [rsp+BCD_BUFFER_16u8_VAR+8], rax  ; | bcd_buffer = 1
+  mov       [rsp+PREV_PRIME_VAR], rcx         ; | prev_prime = 1
   xor       rbx, rbx                ; segment_start_bits = 0
   ; We want to use print_segment for the first segment as well.
   ; However, it doesn't handle single digit output so we do those manually and
@@ -405,7 +407,7 @@ handle_segment_loop:
 ; Print the primes in the current segment.
 print_segment:
   lea       rsi, [rel print_buffer]          ; buf = print_buffer
-  lea       r10, [rel bcd_lookup]
+  lea       r10, [rel bcd_even_lookup]
   ; Load registers from stack variables.
   mov       r11, [rsp+BCD_BUFFER_16u8_VAR]   ; |
   mov       r14, [rsp+BCD_BUFFER_16u8_VAR+8] ; | bcd_buffer
@@ -470,14 +472,15 @@ print_segment_found:
   cmp       r12, r9                 ; | if (p >= next_pow) {
   jl        print_segment_itoa      ; |
   inc       r8                      ; |   output_len++
-  imul      r9, 10                  ; |   next_pow *= 10
+  shl       r9, 1                   ; |
+  lea       r9, [r9+r9*4]           ; |   next_pow *= 10
   ; Convert a number to string.     ; | }
   ; Here we refer to p as b, as we destroy while outputting.
 print_segment_itoa:
   mov       rdx, r12                ; | delta = p
   sub       rdx, rdi                ; | delta = p-prev
   mov       rdi, r12                ; | p = prev
-  mov       eax, [r10+rdx*4]        ; bcd_delta = bcd_lookup[delta]
+  mov       eax, [r10+rdx*2]        ; bcd_delta = bcd_even_lookup[delta/2]
   ; We branch based on whether the resulting string will fit into a single register
   ; (i.e. 8 decimal digits) or if it needs 2.
   cmp       r8, 8
@@ -615,12 +618,13 @@ sieve_primes:
   ;        Storing it like this allows us to make the inner clearing loop smaller.
   resb MAX_PRIMES_PER_SEGMENT*16
 
-; Lookup table for the Binary-Coded Decimal representation of n where each
+; Lookup table for the Binary-Coded Decimal representation of even n where each
 ; decimal digit is 1 byte.
 ; Each n is stored as 4 bytes as MAX_PRIME_GAP is at most 4 decimal digits.
-  alignb 16
-bcd_lookup:
-  resd MAX_PRIME_GAP
+; bcd_even_lookup[n/2] = bcd(n)
+  alignb 64
+bcd_even_lookup:
+  resd MAX_PRIME_GAP/2
 
 ; Buffer space to write the output string.
   alignb 64

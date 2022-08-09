@@ -33,17 +33,17 @@ MAX_PRIME_GAP          equ 1200
 %endif
 
 ; Stack size.
-STACK_VAR_BYTES       equ 80
+STACK_VAR_BYTES        equ 80
 ; Stack offsets for stack variables.
-SEARCH_LIMIT_BITS_VAR equ 8
-OUTPUT_LEN_VAR        equ 16
-NEXT_POW_VAR          equ 24
-WHEEL_SIZE_BITS_VAR   equ 32
-WHEEL_DEC_BITS_VAR    equ 36
-WHEEL_OFFSET_BITS_VAR equ 40
-SIEVE_PRIME_BYTES_VAR equ 44
-BCD_BUFFER_16u8_VAR   equ 48  ; 16 byte Binary-Coded Decimal output buffer.
-PREV_PRIME_VAR        equ 64
+SEARCH_LIMIT_BITS_VAR  equ 8
+OUTPUT_LEN_VAR         equ 16
+NEXT_POW_VAR           equ 24
+WHEEL_SIZE_BITS_VAR    equ 32
+WHEEL_DEC_BITS_VAR     equ 36
+WHEEL_OFFSET_BITS_VAR  equ 40
+SIEVE_PRIMES_BYTES_VAR equ 44
+BCD_BUFFER_16u8_VAR    equ 48  ; 16 byte Binary-Coded Decimal output buffer.
+PREV_PRIME_VAR         equ 64
 
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
@@ -293,8 +293,8 @@ collect_sieve_primes:
 
   clear_prime_multiples sieve_primes, SEGMENT_SIZE_BITS
 
-  mov       [r11+r15], rcx          ; |
-  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f/2, p)
+  mov       [r11+r15], rcx          ; sieve_primes[n/16].fst = f/2
+  mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
   add       r15, 16                 ; n += 16
   jmp       collect_sieve_primes
 
@@ -331,35 +331,54 @@ collect_large_sieve_primes_loop:
   mov       rax, r12                ; |
   mul       rax                     ; | f = p*p (next factor to look at)
   shr       rax, 1                  ; | a = f/2
-  mov       [r11+r15], rax          ; |
-  mov       [r11+r15+8], r12d       ; | sieve_primes[n/16] = (f/2, p)
+  mov       [r11+r15], rax          ; sieve_primes[n/16].fst = f/2
+  mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
   add       r15, 16                 ; n += 16
   jmp       collect_large_sieve_primes_loop
 
 ; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
 all_segments:
+  ; Add a sentinal to the end of the sieve_primes array which will compare
+  ; greater than any value we encounter.
+  mov       rax, -1
+  mov       [r11+r15], rax          ; | sieve_primes[n/16].snd = max_u64
+  mov       [r11+r15+8], rax        ; | sieve_primes[n/16].fst = max_u64
+  ; Reset n back to 0. We will increase it as required so we don't have to
+  ; check portions of the array which aren't used yet.
+  xor       r15, r15
+  mov       [rsp+SIEVE_PRIMES_BYTES_VAR], r15d
+  ; Initialize prev_prime to 1 so that all deltas are even.
   xor       rax, rax
   mov       rcx, 1
-  ; Initialize prev_prime to 1 so that all deltas are even.
   mov       [rsp+BCD_BUFFER_16u8_VAR], rcx    ; |
   mov       [rsp+BCD_BUFFER_16u8_VAR+8], rax  ; | bcd_buffer = 1
   mov       [rsp+PREV_PRIME_VAR], rcx         ; | prev_prime = 1
-  xor       rbx, rbx                ; segment_start_bits = 0
   ; We want to use print_segment for the first segment as well.
   ; However, it doesn't handle single digit output so we do those manually and
   ; cross them off the list here.
+  mov       rbx, SEGMENT_SIZE_BITS            ; segment_end_bits = segment_size_bits
   lea       r13, [rel segment_array]
   and       [r13], byte 0xF0
-  mov       [rsp+SIEVE_PRIME_BYTES_VAR], r15d
   jmp       print_segment
 
 all_segments_loop:
 
 ; Find the primes in the next segment by sieving out all of the sieve primes.
 handle_segment:
-  mov       r15d, [rsp+SIEVE_PRIME_BYTES_VAR]
-
+  add       rbx, SEGMENT_SIZE_BITS      ; segment_end_bits += segment_size_bits
+  xor       r14, r14                    ; x = 0 (index into sieve_primes)
+  lea       r11, [rel sieve_primes]
+  ; Update end of the relavant part of seive_primes.
+  ; r15 always points to the first prime that we haven't used yet (and
+  ; seive_primes has a sentinal at the end).
+  mov       r15d, [rsp+SIEVE_PRIMES_BYTES_VAR]
+update_sieve_primes_limit:
+  add       r15, 16
+  cmp       [r11+r15-16], rbx              ; We've used this element yet, so check if it still past the segment.
+  jb        update_sieve_primes_limit
+  sub       r15, 16                        ; We went too far, so decrement.
+  mov       [rsp+SIEVE_PRIMES_BYTES_VAR], r15d
   ; Copy enough 8-byte elements to hold an offset wheel.
   mov       eax, [rsp+WHEEL_SIZE_BITS_VAR] ; |
   add       rax, SEGMENT_SIZE_BITS         ; |
@@ -368,7 +387,6 @@ handle_segment:
   memcpy_q  [rel template_segment_array], \
             [rel segment_array], \
             rax
-
   ; Increment the offset for alignment with the wheel.
   xor       eax, eax                         ; |
   mov       edx, [rsp+WHEEL_OFFSET_BITS_VAR] ; |
@@ -377,27 +395,26 @@ handle_segment:
   cmovl     eax, [rsp+WHEEL_SIZE_BITS_VAR]   ; |
   add       edx, eax                         ; | if (offset < 0) offset += w
   mov       [rsp+WHEEL_OFFSET_BITS_VAR], edx ; |
-
-  mov       r8, rbx                     ; |
+  ; Initialize remaining loop registers.
+  lea       r8, [rbx-SEGMENT_SIZE_BITS] ; |
   sub       r8, rdx                     ; | array_start_bits = segment_start_bits-array_offset_bits
   lea       r9, [rdx+ARRAY_SIZE_BITS]   ; | wheel_end_bits (where to stop clearing).
   lea       r13, [rel segment_array]
 
-  xor       r14, r14                    ; x = 0 (index into sieve_primes)
-  lea       r11, [rel sieve_primes]
-align 16
+align 64
 handle_segment_loop:
   cmp       r14, r15
   jge       print_segment           ; if (x >= n) print_segment
-  mov       rcx, [r11+r14]          ; |
-  mov       r12d, [r11+r14+8]       ; | (f/2, p) = sieve_primes[x/16]
   add       r14, 16                 ; x += 16
-  sub       rcx, r8                 ; c = f/2-array_start_bits
+  mov       rcx, [r11+r14-16]       ; f/2 = sieve_primes[x/16].fst
   ; Check if this multiple is too large for the segment.
-  cmp       rcx, r9
-  ; NOTE: We could do an extra check to see if we can finish this segment
-  ; entirely, but currently that doesn't seem to help.
+  ; Required because clear_primes_multiples does an unconditional first iteration.
+  ; Note: Because factors increment by 2*p, we start skipping segments when the
+  ;       primes get large.
+  cmp       rcx, rbx
   jge       handle_segment_loop
+  mov       r12d, [r11+r14-8]       ; p = sieve_primes[x/16].snd
+  sub       rcx, r8                 ; c = f/2-array_start_bits
 
   clear_prime_multiples all_segments, r9
   add       rcx, r8                 ; | Save the updated value of f back.
@@ -429,16 +446,17 @@ print_segment:
   shr       qword [r13], cl
   shl       qword [r13], cl
   ; Calculate the global offset
-  sub       r15, rbx                  ; | global_offset = wheel_offset_bits - segment_start_bits
+  sub       r15, rbx                  ; |
+  add       r15, SEGMENT_SIZE_BITS    ; | global_offset = wheel_offset_bits - segment_start_bits
 
   ; Put a sentinal at the end to avoid an extra loop check.
   mov       [r13+ARRAY_SIZE_BYTES+8], byte 0xFF
 
-  ; Update segment_start_bits, this lets us know when to stop printing.
-  add       rbx, SEGMENT_SIZE_BITS            ; |
+  ; If we've reached our search limit, then truncate the segment.
+  ; TODO: Move this up.
   cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; |
   cmovg     rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; | segment_limit = min(
-                                              ; |   segment_start_bits + segment_size_bits,
+                                              ; |   segment_end_bits,
                                               ; |   search_limit_bits
                                               ; | )
 
@@ -487,8 +505,8 @@ print_segment_itoa:
   jle print_segment_itoa_small
 print_segment_itoa_large:
   ; Do a 16-byte BCD addition. bcd_buffer += bcd_delta
-  add       r11, rax                ; |
   mov       rcx, 0xF6F6F6F6F6F6F6F6 ; |
+  add       r11, rax                ; |
   add       r11, rcx                ; |
   adc       r14, rcx                ; | Add with carry
   mov       rax, r11
@@ -529,7 +547,7 @@ print_segment_itoa_small:
   bcd_add   r11, rax, rdx           ; bcd_buffer += bcd_delta
   ; Convert BCD to ASCII
   mov       rax, r11                ; |
-  bswap     rax                     ; |  ascii_output = bcd_buffer in output byte order
+  bswap     rax                     ; | ascii_output = bcd_buffer in output byte order
   lea       rcx, [r8*8]             ; |
   rol       rax, cl                 ; | Shift out leading 0 bytes in ascii_output
   mov       rcx, 0x3030303030303030 ; |
@@ -616,7 +634,8 @@ sieve_primes:
   ;  NOTE: It's difficult to find a way to represent f so that it will reliably
   ;        fit in 32 bits.
   ;        Storing it like this allows us to make the inner clearing loop smaller.
-  resb MAX_PRIMES_PER_SEGMENT*16
+  ; Leave room for a sentinal at the end.
+  resb (MAX_PRIMES_PER_SEGMENT+1)*16
 
 ; Lookup table for the Binary-Coded Decimal representation of even n where each
 ; decimal digit is 1 byte.

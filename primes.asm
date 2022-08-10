@@ -4,6 +4,14 @@
 global    _main
 extern    _puts
 extern    _printf
+extern    _pthread_create
+extern    _pthread_join
+extern    _pthread_mutex_init
+extern    _pthread_cond_init
+extern    _pthread_cond_wait
+extern    _pthread_cond_signal
+extern    _pthread_mutex_lock
+extern    _pthread_mutex_unlock
 
 %ifndef SEGMENT_HINT
 %define SEGMENT_HINT 65535
@@ -21,6 +29,9 @@ MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/4
 ; This is enough for any value less than 10^16.
 ; See https://en.wikipedia.org/wiki/Prime_gap for table.
 MAX_PRIME_GAP          equ 1200
+
+PTHREAD_MUTEX_T_SIZE   equ 64
+PTHREAD_COND_T_SIZE    equ 48
 
 %if LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
 %error "LIMIT is too large for segment size. Set a larger SEGMENT_HINT."
@@ -43,6 +54,9 @@ WHEEL_OFFSET_BITS_VAR  equ 40
 SIEVE_PRIMES_BYTES_VAR equ 44
 BCD_BUFFER_16u8_VAR    equ 48  ; 16 byte Binary-Coded Decimal output buffer.
 PREV_PRIME_VAR         equ 64
+
+WRITE_STATE_GENERATE   equ 0
+WRITE_STATE_OUTPUT     equ 1
 
 ; debug <format> <value>
 ; Save a bunch of callee saved registers for convinience.
@@ -103,8 +117,11 @@ PREV_PRIME_VAR         equ 64
 section   .text
 
 _main:
-  push      rsp                     ; Required for alignment
+  push      rsp                      ; Required for alignment
   sub       rsp, STACK_VAR_BYTES
+
+  ; Initialize writer thread
+  call init_writer_thread
 
 ; Create a lookup table for the Binary-Coded Decimal representation of n for
 ; even n up to MAX_PRIME_GAP.
@@ -422,6 +439,10 @@ handle_segment_loop:
 
 ; Print the primes in the current segment.
 print_segment:
+  ; Wait until the writer is no longer using the print_buffer.
+  mov       rdi, WRITE_STATE_GENERATE
+  call      wait_until_write_state
+  ; Load the (now unused) print buffer.
   lea       rsi, [rel print_buffer]          ; buf = print_buffer
   lea       r10, [rel bcd_even_lookup]
   ; Load registers from stack variables.
@@ -567,33 +588,127 @@ print_segment_write:
   mov       [rsp+BCD_BUFFER_16u8_VAR], r11
   mov       [rsp+BCD_BUFFER_16u8_VAR+8], r14
   mov       [rsp+PREV_PRIME_VAR], rdi
-  ; If we have nothing to write, don't call _puts because it adds a newline.
-  lea       rdi, [rel print_buffer]
-  cmp       rsi, rdi
-  je        print_segment_skip
-
-%ifndef QUIET
   ; Add a null byte to terminate the string.
   mov       [rsi-1], byte 0
-  call _puts
-%endif
-print_segment_skip:
+  ; Signal the writer thread.
+  lea       rdi, WRITE_STATE_OUTPUT
+  call      update_and_signal_write_state
 
 ; Continue looping until we reach the search limit.
   cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]
   jl        all_segments_loop
 
 exit:
+  ; Ensure the last bit of output is written before we exit.
+  mov       rdi, WRITE_STATE_GENERATE
+  call      wait_until_write_state
+  ; Fix up stack before returning
   add       rsp, STACK_VAR_BYTES
-  pop       rsp                     ; Fix up stack before returning
-  xor       rax, rax                ; return 0
+  pop       rsp
+  xor       rax, rax                ; |
+  ret                               ; | return 0
+
+init_writer_thread:
+  push rsp
+  ; Initialize signaling mutex.
+                                     ; | pthread_mutex_init(
+  lea       rdi, [rel writer_mutex]  ; |  mutex = writer_mutex,
+  mov       rsi, 0                   ; |  attr = 0,
+  call      _pthread_mutex_init      ; | )
+  ; Initialize signaling condition.
+                                     ; | pthread_cond_init(
+  lea       rdi, [rel write_cond]    ; |  cond = write_cond,
+  mov       rsi, 0                   ; |  attr = 0,
+  call      _pthread_cond_init       ; | )
+  ; Start writer thread
+                                          ; | pthread_create(
+  lea       rdi, [rel writer_thread]      ; |  thread = writer_thread,
+  mov       rsi, 0                        ; |  attr = 0,
+  lea       rdx, [rel writer_thread_loop] ; |  start_routine = writer_thread_loop,
+  mov       rcx, 0                        ; |  arg = 0
+  call      _pthread_create               ; | )
+  pop rsp
+  ret
+
+; Loop forever waiting for output top be available.
+writer_thread_loop:
+  push      rsp
+.loop:                                    ; | while (true) {
+  lea       rdi, WRITE_STATE_OUTPUT       ; |
+  call      wait_until_write_state        ; |   block until write_state == OUTPUT
+  lea       rdi, [rel print_buffer]       ; |   buf = print_buffer
+  ; If we have nothing to write, don't    ; |
+  ; call _puts because it adds a newline. ; |
+  cmp       [rdi], byte 0                 ; |   if (*buf) {
+  je        .skip_write                   ; |
+%ifndef QUIET                             ; |
+  call _puts                              ; |     puts(buf)
+%endif                                    ; |   }
+.skip_write:                              ; |
+  lea       rdi, WRITE_STATE_GENERATE     ; |
+  call      update_and_signal_write_state ; |   write_state = GENERATE
+  jmp .loop                               ; | }
+
+; Lock mutex and wait until write_state == rdi
+; writer_mutex is locked when the function returns.
+; wait_until_write_state <target_state>
+wait_until_write_state:
+  push      rbx
+  mov       rbx, rdi
+                                    ; | pthread_mutex_lock(
+  lea       rdi, [rel writer_mutex] ; |  mutex = writer_mutex,
+  call      _pthread_mutex_lock     ; | )
+.wait_loop:                         ; | while (true) {
+  lea       rax, [rel writer_state] ; |
+  cmp       bl, [rax]               ; |   if (write_state == <target_state>)
+  je        .done                   ; |     return
+                                    ; |   pthread_cond_wait(
+  lea       rdi, [rel write_cond]   ; |    cond = write_cond,
+  lea       rsi, [rel writer_mutex] ; |    mutex = writer_mutex,
+  call      _pthread_cond_wait      ; |   )
+  jmp       .wait_loop              ; | }
+.done:
+  pop       rbx
+  ret
+
+; Update state, signal and unlock.
+; writer_mutex is unlocked when the function returns.
+; update_and_signal_write_state <new_state>
+update_and_signal_write_state:
+  push      rsp
+  lea       rax, [rel writer_state] ; |
+  mov       [rax], dil              ; | writer_state = <new_state>
+                                    ; | pthread_cond_signal(
+  lea       rdi, [rel write_cond]   ; |  cond = write_cond
+  call      _pthread_cond_signal    ; | )
+                                    ; | pthread_mutex_unlock(
+  lea       rdi, [rel writer_mutex] ; |  mutex = writer_mutex,
+  call      _pthread_mutex_unlock   ; | )
+  pop       rsp
   ret
 
 section   .data
 
-; Small primes to directly print.
+; pthread_t value
+writer_thread:
+  dq 0
+; pthread_cond_t value
+  align 64
+write_cond:
+  times PTHREAD_COND_T_SIZE db 0
+; pthread_mutex_t value
+  align 64
+writer_mutex:
+  times PTHREAD_MUTEX_T_SIZE db 0
+; write_state
+writer_state:
+  db WRITE_STATE_GENERATE
+
 prelude:
   db `2\n3\n5\n7`, 0
+
+; Small primes to directly print.
+  align 64
 
 ; Format strings for debugging.
 format_i64:

@@ -19,33 +19,64 @@ extern    _pthread_mutex_lock
 extern    _pthread_mutex_unlock
 %endif
 
+; Our limit is 10^16 because our output routine can only deal with 16 digits.
+%assign SQRT_LIMIT 100000000
+%assign MAX_LIMIT SQRT_LIMIT*SQRT_LIMIT
+%assign PRIMES_BELOW_SQRT_LIMIT 5761455
+
+; Determine SEGMENT_SIZE from SEGMENT_HINT by aligning it to 8-bytes.
 %ifndef SEGMENT_HINT
-  %define SEGMENT_HINT 65535
+  %define SEGMENT_HINT 65536
 %endif
+%assign SEGMENT_SIZE ((SEGMENT_HINT+128-1)/128)*128
+; Ensure that the segment is not too large.
+%if SEGMENT_SIZE > SQRT_LIMIT
+  %fatal "SEGMENT_HINT must be less than 10^8."
+%endif
+; Determine SEARCH_LIMIT.
+; If no LIMIT is provided make the highest limit we can.
 %ifndef LIMIT
-  %define LIMIT SEGMENT_SIZE*SEGMENT_SIZE
+  %assign SEARCH_LIMIT SEGMENT_SIZE*SEGMENT_SIZE
+  %if SEARCH_LIMIT > MAX_LIMIT
+    %assign SEARCH_LIMIT MAX_LIMIT
+  %endif
+%else
+  %assign SEARCH_LIMIT LIMIT
 %endif
-; Ensure segments are 8 byte aligned.
-SEGMENT_SIZE           equ ((SEGMENT_HINT/128)+1)*128
-SEARCH_LIMIT_BITS      equ LIMIT/2
+%if SEARCH_LIMIT > MAX_LIMIT
+  %fatal "LIMIT is too large. Max is 10^16."
+%endif
+; Increase SEGMENT_SIZE to support the desired SEARCH_LIMIT.
+%rep 30
+  %if SEARCH_LIMIT <= SEGMENT_SIZE*SEGMENT_SIZE
+    %exitrep
+  %endif
+  ; Keep doubling until we reach the target.
+  %assign SEGMENT_SIZE SEGMENT_SIZE*2
+  ; Ensure that we don't get too large.
+  %if SEGMENT_SIZE > SQRT_LIMIT
+    %assign SEGMENT_SIZE SQRT_LIMIT
+  %endif
+%endrep
+
+; The minimum SEGMENT_SIZE=128 which has density < 4.
+%assign MAX_PRIMES_PER_SEGMENT SEGMENT_SIZE/4
+; However, cap it at the max value our program is capable of reaching.
+; This is necessary to get the program to compile, otherwise the memory
+; allocations get too large.
+%if MAX_PRIMES_PER_SEGMENT > PRIMES_BELOW_SQRT_LIMIT
+  %assign MAX_PRIMES_PER_SEGMENT PRIMES_BELOW_SQRT_LIMIT
+%endif
+SEARCH_LIMIT_BITS      equ SEARCH_LIMIT/2
 SEGMENT_SIZE_BITS      equ SEGMENT_SIZE/2
 SEGMENT_SIZE_BYTES     equ SEGMENT_SIZE_BITS/8
-; The minimum SEGMENT_SIZE=128 which has density < 4.
-MAX_PRIMES_PER_SEGMENT equ SEGMENT_SIZE/4
 ; This is enough for any value less than 10^16.
 ; See https://en.wikipedia.org/wiki/Prime_gap for table.
 MAX_PRIME_GAP          equ 1200
 
+%if THREADING == 1
 PTHREAD_MUTEX_T_SIZE   equ 64
 PTHREAD_COND_T_SIZE    equ 48
-
-%if LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
-  %error "LIMIT is too large for segment size. Set a larger SEGMENT_HINT."
-%endif
-
-; Our limit is 10^16 because our output routine can only deal with 16 digits.
-%if LIMIT > 10000000000000000
-  %error "LIMIT is too large. Max is 10^16."
 %endif
 
 ; Stack size.
@@ -731,11 +762,9 @@ writer_state:
   db WRITE_STATE_GENERATE
 %endif
 
+; Small primes to directly print.
 prelude:
   db '2', 0
-
-; Small primes to directly print.
-  align 64
 
 ; Format strings for debugging.
 format_i64:

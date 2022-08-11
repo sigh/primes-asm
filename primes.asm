@@ -127,8 +127,9 @@ _main:
   sub       rsp, STACK_VAR_BYTES
 
 %if THREADING == 1
-  ; Initialize writer thread
-  call init_writer_thread
+  call      init_writer_thread
+%else
+  call      write_prelude
 %endif
 
 ; Create a lookup table for the Binary-Coded Decimal representation of n for
@@ -144,17 +145,6 @@ build_bcd_lookup:
   add       rcx, 2                  ; n += 2
   cmp       rcx, MAX_PRIME_GAP      ; |
   jl        build_bcd_lookup        ; | if (n < MAX_PRIME_GAP) build_bcd_lookup
-
-initialize:
-  ; Write out the first primes directly.
-  ;  - 2 has to be printed directly because the rest of the program assumes odd
-  ;    numbers.
-  ;  - The single digit primes are printed out as the itoa code doesn't handle
-  ;    them.
-  lea       rdi, [rel prelude]
-%ifndef QUIET
-  call      _puts
-%endif
 
   ; Initialize stack variables.
   mov       rax, 1
@@ -379,11 +369,8 @@ all_segments:
   mov       [rsp+BCD_BUFFER_16u8_VAR+8], rax  ; | bcd_buffer = 1
   mov       [rsp+PREV_PRIME_VAR], rcx         ; | prev_prime = 1
   ; We want to use print_segment for the first segment as well.
-  ; However, it doesn't handle single digit output so we do those manually and
-  ; cross them off the list here.
   mov       rbx, SEGMENT_SIZE_BITS            ; segment_end_bits = segment_size_bits
   lea       r13, [rel segment_array]
-  and       [r13], byte 0xF0
   jmp       print_segment
 
 all_segments_loop:
@@ -625,6 +612,17 @@ exit:
   xor       rax, rax                ; |
   ret                               ; | return 0
 
+; Start the prime list manually.
+; 2 has to be printed directly because the rest of the program assumes odd numbers.
+write_prelude:
+  push rsp
+  lea       rdi, [rel prelude]
+%ifndef QUIET
+  call      _puts
+%endif
+  pop rsp
+  ret
+
 ; Write print_buffer to stdout
 write_print_buffer:
   push rsp
@@ -666,10 +664,11 @@ init_writer_thread:
 ; Loop forever waiting for output top be available.
 writer_thread_loop:
   push      rsp
+  call      write_prelude                 ; write_prelude()
 .loop:                                    ; | while (true) {
   lea       rdi, WRITE_STATE_OUTPUT       ; |
   call      wait_until_write_state        ; |   block until write_state == OUTPUT
-  call      write_print_buffer                  ; |   write_output()
+  call      write_print_buffer            ; |   write_print_buffer()
   lea       rdi, WRITE_STATE_GENERATE     ; |
   call      update_and_signal_write_state ; |   write_state = GENERATE
   jmp .loop                               ; | }
@@ -733,7 +732,7 @@ writer_state:
 %endif
 
 prelude:
-  db `2\n3\n5\n7`, 0
+  db '2', 0
 
 ; Small primes to directly print.
   align 64

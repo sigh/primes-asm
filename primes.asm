@@ -4,6 +4,11 @@
 global    _main
 extern    _puts
 extern    _printf
+
+%ifndef THREADING
+  %define THREADING 1
+%endif
+%if THREADING == 1
 extern    _pthread_create
 extern    _pthread_join
 extern    _pthread_mutex_init
@@ -12,12 +17,13 @@ extern    _pthread_cond_wait
 extern    _pthread_cond_signal
 extern    _pthread_mutex_lock
 extern    _pthread_mutex_unlock
+%endif
 
 %ifndef SEGMENT_HINT
-%define SEGMENT_HINT 65535
+  %define SEGMENT_HINT 65535
 %endif
 %ifndef LIMIT
-%define LIMIT SEGMENT_SIZE*SEGMENT_SIZE
+  %define LIMIT SEGMENT_SIZE*SEGMENT_SIZE
 %endif
 ; Ensure segments are 8 byte aligned.
 SEGMENT_SIZE           equ ((SEGMENT_HINT/128)+1)*128
@@ -34,12 +40,12 @@ PTHREAD_MUTEX_T_SIZE   equ 64
 PTHREAD_COND_T_SIZE    equ 48
 
 %if LIMIT > SEGMENT_SIZE*SEGMENT_SIZE
-%error "LIMIT is too large for segment size. Set a larger SEGMENT_HINT."
+  %error "LIMIT is too large for segment size. Set a larger SEGMENT_HINT."
 %endif
 
 ; Our limit is 10^16 because our output routine can only deal with 16 digits.
 %if LIMIT > 10000000000000000
-%error "LIMIT is too large. Max is 10^16."
+  %error "LIMIT is too large. Max is 10^16."
 %endif
 
 ; Stack size.
@@ -120,8 +126,10 @@ _main:
   push      rsp                      ; Required for alignment
   sub       rsp, STACK_VAR_BYTES
 
+%if THREADING == 1
   ; Initialize writer thread
   call init_writer_thread
+%endif
 
 ; Create a lookup table for the Binary-Coded Decimal representation of n for
 ; even n up to MAX_PRIME_GAP.
@@ -439,9 +447,11 @@ handle_segment_loop:
 
 ; Print the primes in the current segment.
 print_segment:
+%if THREADING == 1
   ; Wait until the writer is no longer using the print_buffer.
   mov       rdi, WRITE_STATE_GENERATE
   call      wait_until_write_state
+%endif
   ; Load the (now unused) print buffer.
   lea       rsi, [rel print_buffer]          ; buf = print_buffer
   lea       r10, [rel bcd_even_lookup]
@@ -590,24 +600,47 @@ print_segment_write:
   mov       [rsp+PREV_PRIME_VAR], rdi
   ; Add a null byte to terminate the string.
   mov       [rsi-1], byte 0
+%if THREADING == 1
   ; Signal the writer thread.
   lea       rdi, WRITE_STATE_OUTPUT
   call      update_and_signal_write_state
+%else
+  call      write_print_buffer
+%endif
 
 ; Continue looping until we reach the search limit.
   cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]
   jl        all_segments_loop
 
 exit:
+%if THREADING == 1
+  ; Signal the writer thread.
   ; Ensure the last bit of output is written before we exit.
   mov       rdi, WRITE_STATE_GENERATE
   call      wait_until_write_state
+%endif
   ; Fix up stack before returning
   add       rsp, STACK_VAR_BYTES
   pop       rsp
   xor       rax, rax                ; |
   ret                               ; | return 0
 
+; Write print_buffer to stdout
+write_print_buffer:
+  push rsp
+  lea       rdi, [rel print_buffer]       ; buf = print_buffer
+  ; If we have nothing to write, don't    ;
+  ; call _puts because it adds a newline. ;
+  cmp       [rdi], byte 0                 ; | if (*buf) {
+  je        .skip_write                   ; |
+%ifndef QUIET                             ; |
+  call _puts                              ; |   puts(buf)
+%endif                                    ; | }
+.skip_write:
+  pop  rsp
+  ret
+
+%if THREADING == 1
 init_writer_thread:
   push rsp
   ; Initialize signaling mutex.
@@ -636,15 +669,7 @@ writer_thread_loop:
 .loop:                                    ; | while (true) {
   lea       rdi, WRITE_STATE_OUTPUT       ; |
   call      wait_until_write_state        ; |   block until write_state == OUTPUT
-  lea       rdi, [rel print_buffer]       ; |   buf = print_buffer
-  ; If we have nothing to write, don't    ; |
-  ; call _puts because it adds a newline. ; |
-  cmp       [rdi], byte 0                 ; |   if (*buf) {
-  je        .skip_write                   ; |
-%ifndef QUIET                             ; |
-  call _puts                              ; |     puts(buf)
-%endif                                    ; |   }
-.skip_write:                              ; |
+  call      write_print_buffer                  ; |   write_output()
   lea       rdi, WRITE_STATE_GENERATE     ; |
   call      update_and_signal_write_state ; |   write_state = GENERATE
   jmp .loop                               ; | }
@@ -686,9 +711,11 @@ update_and_signal_write_state:
   call      _pthread_mutex_unlock   ; | )
   pop       rsp
   ret
+%endif ; THREADING == 1
 
 section   .data
 
+%if THREADING == 1
 ; pthread_t value
 writer_thread:
   dq 0
@@ -703,6 +730,7 @@ writer_mutex:
 ; write_state
 writer_state:
   db WRITE_STATE_GENERATE
+%endif
 
 prelude:
   db `2\n3\n5\n7`, 0

@@ -2,6 +2,7 @@
 ;   nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
 global    _main
+
 extern    _puts
 extern    _printf
 
@@ -19,60 +20,73 @@ extern    _pthread_mutex_lock
 extern    _pthread_mutex_unlock
 %endif
 
-; Our limit is 10^16 because our output routine can only deal with 16 digits.
-%assign SQRT_LIMIT 100000000
-%assign MAX_LIMIT SQRT_LIMIT*SQRT_LIMIT
-%assign PRIMES_BELOW_SQRT_LIMIT 5761455
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Set up limits and segments.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-; Determine SEGMENT_SIZE from SEGMENT_HINT by aligning it to 8-bytes.
-%ifndef SEGMENT_HINT
-  %define SEGMENT_HINT 65536
-%endif
-%assign SEGMENT_SIZE ((SEGMENT_HINT+128-1)/128)*128
-; Ensure that the segment is not too large.
-%if SEGMENT_SIZE > SQRT_LIMIT
-  %fatal "SEGMENT_HINT must be less than 10^8."
-%endif
-; Determine SEARCH_LIMIT.
-; If no LIMIT is provided make the highest limit we can.
+; Our limit is 10^16 because our output routine can only deal with 16 digits.
+%assign MIN_SEGMENT_SIZE 128
+%assign MAX_SEGMENT_SIZE 100000000
+%assign MAX_LIMIT MAX_SEGMENT_SIZE*MAX_SEGMENT_SIZE
+%assign PRIMES_BELOW_MAX_SEGMENT_SIZE 5761455
+
+; Set a default limit or ensure it is not too large.
 %ifndef LIMIT
-  %assign SEARCH_LIMIT SEGMENT_SIZE*SEGMENT_SIZE
-  %if SEARCH_LIMIT > MAX_LIMIT
-    %assign SEARCH_LIMIT MAX_LIMIT
-  %endif
-%else
-  %assign SEARCH_LIMIT LIMIT
+  %assign LIMIT 1<<32
 %endif
-%if SEARCH_LIMIT > MAX_LIMIT
+%if LIMIT > MAX_LIMIT
   %fatal "LIMIT is too large. Max is 10^16."
 %endif
-; Increase SEGMENT_SIZE to support the desired SEARCH_LIMIT.
-%rep 30
-  %if SEARCH_LIMIT <= SEGMENT_SIZE*SEGMENT_SIZE
+
+; Determine a SEGMENT_SIZE that can cover the current limit.
+; Minimum segment size is 128, allowing us to process the seive in 8-byte bitset
+; chunks (we skip all even numbers, thus 64 bits * 2 = 128).
+%assign SEGMENT_SIZE 128
+%rep 64
+  %if SEGMENT_SIZE*SEGMENT_SIZE >= LIMIT
     %exitrep
   %endif
   ; Keep doubling until we reach the target.
   %assign SEGMENT_SIZE SEGMENT_SIZE*2
   ; Ensure that we don't get too large.
-  %if SEGMENT_SIZE > SQRT_LIMIT
-    %assign SEGMENT_SIZE SQRT_LIMIT
+  %if SEGMENT_SIZE > MAX_SEGMENT_SIZE
+    %assign SEGMENT_SIZE MAX_SEGMENT_SIZE
   %endif
 %endrep
+
+; Allow the segment size to be overridden.
+%ifdef SEGMENT_OVERRIDE
+  %if (SEGMENT_OVERRIDE)&127 != 0
+    %fatal "SEGMENT_OVERRIDE must be multiple of 128"
+  %endif
+  %if (SEGMENT_OVERRIDE)*(SEGMENT_OVERRIDE) < LIMIT
+    %fatal "SEGMENT_OVERRIDE*SEGMENT_OVERRIDE must be >= LIMIT"
+  %endif
+  %if (SEGMENT_OVERRIDE) > MAX_SEGMENT_SIZE
+    %fatal "SEGMENT_OVERRIDE must be < 10^8"
+  %endif
+  %assign SEGMENT_SIZE SEGMENT_OVERRIDE
+%endif
 
 ; The minimum SEGMENT_SIZE=128 which has density < 4.
 %assign MAX_PRIMES_PER_SEGMENT SEGMENT_SIZE/4
 ; However, cap it at the max value our program is capable of reaching.
 ; This is necessary to get the program to compile, otherwise the memory
 ; allocations get too large.
-%if MAX_PRIMES_PER_SEGMENT > PRIMES_BELOW_SQRT_LIMIT
-  %assign MAX_PRIMES_PER_SEGMENT PRIMES_BELOW_SQRT_LIMIT
+%if MAX_PRIMES_PER_SEGMENT > PRIMES_BELOW_MAX_SEGMENT_SIZE
+  %assign MAX_PRIMES_PER_SEGMENT PRIMES_BELOW_MAX_SEGMENT_SIZE
 %endif
+SEARCH_LIMIT           equ LIMIT
 SEARCH_LIMIT_BITS      equ SEARCH_LIMIT/2
 SEGMENT_SIZE_BITS      equ SEGMENT_SIZE/2
 SEGMENT_SIZE_BYTES     equ SEGMENT_SIZE_BITS/8
 ; This is enough for any value less than 10^16.
 ; See https://en.wikipedia.org/wiki/Prime_gap for table.
 MAX_PRIME_GAP          equ 1200
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Constants and helpers
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 %if THREADING == 1
 PTHREAD_MUTEX_T_SIZE   equ 64
@@ -153,6 +167,10 @@ WRITE_STATE_OUTPUT     equ 1
 
 section   .text
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Initialize program
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 _main:
   push      rsp                      ; Required for alignment
   sub       rsp, STACK_VAR_BYTES
@@ -184,6 +202,10 @@ build_bcd_lookup:
   mov       [rsp+NEXT_POW_VAR], rax
   mov       rax, SEARCH_LIMIT_BITS
   mov       [rsp+SEARCH_LIMIT_BITS_VAR], rax
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Initial segment
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
   ; Initialize the initial_segment_array with 1s.
   mov       rcx, SEGMENT_SIZE_BYTES
@@ -380,6 +402,10 @@ collect_large_sieve_primes_loop:
   mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
   add       r15, 16                 ; n += 16
   jmp       collect_large_sieve_primes_loop
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Rest of the segments
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
@@ -630,6 +656,10 @@ print_segment_write:
   cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]
   jl        all_segments_loop
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Finish program
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 exit:
 %if THREADING == 1
   ; Signal the writer thread.
@@ -642,6 +672,10 @@ exit:
   pop       rsp
   xor       rax, rax                ; |
   ret                               ; | return 0
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Output functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ; Start the prime list manually.
 ; 2 has to be printed directly because the rest of the program assumes odd numbers.
@@ -668,6 +702,10 @@ write_print_buffer:
 .skip_write:
   pop  rsp
   ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Threading functions
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 %if THREADING == 1
 init_writer_thread:
@@ -742,6 +780,10 @@ update_and_signal_write_state:
   pop       rsp
   ret
 %endif ; THREADING == 1
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Data
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 section   .data
 

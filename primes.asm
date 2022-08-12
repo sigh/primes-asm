@@ -219,7 +219,7 @@ collect_wheel_primes:
   ; Find the LSB.
   bsf       rcx, [r13]
   ; We found a prime! Figure out the value.
-  ; NOTE: Wait until confirming this prime is part of the wheel beforing
+  ; NOTE: Wait until confirming this prime is part of the wheel before
   ; unsetting it.
   lea       r12, [rcx+rcx+1]        ; | p = c*2+1
   ; Determine if we've found all the wheel primes.
@@ -235,8 +235,8 @@ collect_wheel_primes:
   and       rax, rdi
   mov       [r13], rax
   ; Move the prime into the segment array.
-  xor       rax, rdi
-  or        [r8], rax
+  xor       rax, rdi                ; extract the bit
+  or        [r8], rax               ; insert it into the segment array (wheel primes are always in the first bitset)
   ; Calculate a = p*p. This is the first candidate we want to start clearing,
   ; as all the previous candidates have been cleared already.
   mov       rcx, r12                ; |
@@ -330,9 +330,9 @@ collect_sieve_primes:
   ; as all the previous candidates have been cleared already.
   mov       rcx, r12                ; |
   imul      rcx, rcx                ; | c = p*p
-  cmp       rcx, SEGMENT_SIZE
   ; If p*p is not in the segment, we have marked all the primes in the segment.
   ; So we can just directly collect the rest.
+  cmp       rcx, SEGMENT_SIZE           ; |
   jge       collect_large_sieve_primes  ; | if (p*p >= SEGMENT_SIZE) collect_large_sieve_primes
   ; Unset the LSB.
   lea       rax, [rdi-1]
@@ -344,7 +344,7 @@ collect_sieve_primes:
   ; Clear rdi for the next iteration.
   xor       rdi, rdi
   ; Shift c to account for the fact that the array only contains odd numbers.
-  shr       rcx, 1                  ; | c /= 2
+  shr       rcx, 1                  ; c /= 2
 
   clear_prime_multiples SEGMENT_SIZE_BITS
 
@@ -398,7 +398,7 @@ collect_large_sieve_primes_loop:
 ; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
 all_segments:
-  ; Add a sentinal to the end of the sieve_primes array which will compare
+  ; Add a sentinel to the end of the sieve_primes array which will compare
   ; greater than any value we encounter.
   mov       rax, -1
   mov       [r11+r15], rax          ; | sieve_primes[n/16].snd = max_u64
@@ -427,7 +427,7 @@ handle_segment:
   lea       r11, [rel sieve_primes]
   ; Update end of the relavant part of seive_primes.
   ; r15 always points to the first prime that we haven't used yet (and
-  ; seive_primes has a sentinal at the end).
+  ; seive_primes has a sentinel at the end).
   mov       r15d, [rsp+SIEVE_PRIMES_BYTES_VAR]
 update_sieve_primes_limit:
   add       r15, 16
@@ -500,20 +500,20 @@ print_segment:
   shr       rax, 3                    ; |
   add       r13, rax                  ; | *sieve_array += a/8
   shl       rax, 3                    ; |
-  ; Zero out the invalid bits of r15 bits.
-  mov       rcx, r15
+  ; Zero out the bits in [r13] before the segment start.
+  ; This is required so that they aren't considered primes.
+  mov       rcx, r15                  ; |
   sub       rcx, rax                  ; | byte_offset_bits = wheel_offset_bits-a
-  shr       qword [r13], cl
-  shl       qword [r13], cl
+  shr       qword [r13], cl           ; |
+  shl       qword [r13], cl           ; | Clear the first CL bits.
   ; Calculate the global offset
   sub       r15, rbx                  ; |
   add       r15, SEGMENT_SIZE_BITS    ; | global_offset = wheel_offset_bits - segment_start_bits
 
-  ; Put a sentinal at the end to avoid an extra loop check.
+  ; Put a sentinel at the end to avoid an extra loop check.
   mov       [r13+SEGMENT_SIZE_BYTES+8], byte 0xFF
 
   ; If we've reached our search limit, then truncate the segment.
-  ; TODO: Move this up.
   cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; |
   cmovg     rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; | segment_limit = min(
                                               ; |   segment_end_bits,
@@ -799,7 +799,7 @@ section .bss
 ; Template array to hold the prime wheel.
 ; This is used to initialize the segment_array before processing each segment.
 ; Space is left at the end to be able to store an extra rotations of a wheel
-; plus a byte for storing a sentinal value.
+; plus a byte for storing a sentinel value.
   alignb 64
 template_segment_array:
   resb SEGMENT_SIZE_BYTES*2+1
@@ -824,7 +824,7 @@ sieve_primes:
   ;  NOTE: It's difficult to find a way to represent f so that it will reliably
   ;        fit in 32 bits.
   ;        Storing it like this allows us to make the inner clearing loop smaller.
-  ; Leave room for a sentinal at the end.
+  ; Leave room for a sentinel at the end.
   resb (MAX_PRIMES_PER_SEGMENT+1)*16
 
 ; Lookup table for the Binary-Coded Decimal representation of even n where each

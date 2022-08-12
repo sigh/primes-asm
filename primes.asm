@@ -93,18 +93,16 @@ PTHREAD_MUTEX_T_SIZE   equ 64
 PTHREAD_COND_T_SIZE    equ 48
 %endif
 
-; Stack size.
-STACK_VAR_BYTES        equ 80
 ; Stack offsets for stack variables.
-SEARCH_LIMIT_BITS_VAR  equ 8
-OUTPUT_LEN_VAR         equ 16
-NEXT_POW_VAR           equ 24
-WHEEL_SIZE_BITS_VAR    equ 32
-WHEEL_DEC_BITS_VAR     equ 36
-WHEEL_OFFSET_BITS_VAR  equ 40
-SIEVE_PRIMES_BYTES_VAR equ 44
-BCD_BUFFER_16u8_VAR    equ 48  ; 16 byte Binary-Coded Decimal output buffer.
-PREV_PRIME_VAR         equ 64
+SEARCH_LIMIT_BITS_VAR  equ 8  ; 8 bytes
+WHEEL_SIZE_BITS_VAR    equ 16 ; 8 bytes
+WHEEL_DEC_BITS_VAR     equ 24 ; 4 bytes
+WHEEL_OFFSET_BITS_VAR  equ 28 ; 4 bytes
+SIEVE_PRIMES_BYTES_VAR equ 32 ; 8 bytes
+BCD_BUFFER_16u8_VAR    equ 40 ; 16 byte Binary-Coded Decimal output buffer.
+PREV_PRIME_VAR         equ 56 ; 8 bytes
+; Stack size.
+STACK_VAR_BYTES        equ 64
 
 WRITE_STATE_GENERATE   equ 0
 WRITE_STATE_OUTPUT     equ 1
@@ -149,22 +147,6 @@ WRITE_STATE_OUTPUT     equ 1
   rep movsq
 %endmacro
 
-; Adds Binary-Coded Decimal numbers.
-; scratch is used as a scratch register.
-; bcd_add <dst> <src> <scratch2>
-%macro bcd_add 3
-  add       %1, %2                  ; Binary addition
-  mov       %3, 0xF6F6F6F6F6F6F6F6  ; |
-  add       %1, %3                  ; | Propogate carries into the next byte.
-  mov       %2, %1
-  mov       %3, 0x6060606060606060  ; |
-  and       %2, %3                  ; |
-  shr       %2, 4                   ; | Fix up the non-carried parts.
-  mov       %3, 0x0F0F0F0F0F0F0F0F  ; |
-  and       %1, %3                  ; | Isolate the carried parts.
-  sub       %1, %2                  ; Combine carried and non-carried.
-%endmacro
-
 section   .text
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -189,17 +171,23 @@ _main:
   xor       rax, rax                ; bcd_n = 0
 build_bcd_lookup:
   mov       [rdi+rcx*2], eax        ; bcd_even_lookup[n/2] = bcd_n
-  mov       rbx, 2                  ; |
-  bcd_add   rax, rbx, rdx           ; | bcd_n += bcd(2)
+  ; Increment by 2
+  add       rax, 2                  ; | Binary a+2
+  mov       rdx, 0xF6F6F6F6         ; | |
+  add       rax, rdx                ; | | Propogate carries into the next byte.
+  mov       rbx, rax                ; |
+  mov       rdx, 0x60606060         ; | |
+  and       rbx, rdx                ; | |
+  shr       rbx, 4                  ; | | Fix up the non-carried parts.
+  mov       rdx, 0x0F0F0F0F         ; | |
+  and       rax, rdx                ; | | Isolate the carried parts.
+  sub       rax, rbx                ; | Combine carried and non-carried.
+                                    ; | bcd_n += bcd(2)
   add       rcx, 2                  ; n += 2
   cmp       rcx, MAX_PRIME_GAP      ; |
   jl        build_bcd_lookup        ; | if (n < MAX_PRIME_GAP) build_bcd_lookup
 
   ; Initialize stack variables.
-  mov       rax, 1
-  mov       [rsp+OUTPUT_LEN_VAR], rax
-  mov       rax, 10
-  mov       [rsp+NEXT_POW_VAR], rax
   mov       rax, SEARCH_LIMIT_BITS
   mov       [rsp+SEARCH_LIMIT_BITS_VAR], rax
 
@@ -503,8 +491,6 @@ print_segment:
   mov       r11, [rsp+BCD_BUFFER_16u8_VAR]   ; |
   mov       r14, [rsp+BCD_BUFFER_16u8_VAR+8] ; | bcd_buffer
   mov       rdi, [rsp+PREV_PRIME_VAR]
-  mov       r8, [rsp+OUTPUT_LEN_VAR]
-  mov       r9, [rsp+NEXT_POW_VAR]
   ; Determine the wheel alignment
   mov       r15d, [rsp+WHEEL_OFFSET_BITS_VAR]
   ; Move r13 forward so that the first 8-byte section is valid.
@@ -560,24 +546,12 @@ print_segment_found:
   cmp       rcx, rbx                         ; |
   jge       print_segment_write              ; | if (c > segment_limit) print_segment_write
   lea       r12, [rcx+rcx+1]                 ; | p = c*2+1
-  ; Update output length variables.
-  cmp       r12, r9                 ; | if (p >= next_pow) {
-  jl        print_segment_itoa      ; |
-  inc       r8                      ; |   output_len++
-  shl       r9, 1                   ; |
-  lea       r9, [r9+r9*4]           ; |   next_pow *= 10
-  ; Convert a number to string.     ; | }
-  ; Here we refer to p as b, as we destroy while outputting.
+  ; Convert the prime to a string.
 print_segment_itoa:
   mov       rdx, r12                ; | delta = p
   sub       rdx, rdi                ; | delta = p-prev
   mov       rdi, r12                ; | p = prev
   mov       eax, [r10+rdx*2]        ; bcd_delta = bcd_even_lookup[delta/2]
-  ; We branch based on whether the resulting string will fit into a single register
-  ; (i.e. 8 decimal digits) or if it needs 2.
-  cmp       r8, 8
-  jle print_segment_itoa_small
-print_segment_itoa_large:
   ; Do a 16-byte BCD addition. bcd_buffer += bcd_delta
   mov       rcx, 0xF6F6F6F6F6F6F6F6 ; |
   add       r11, rax                ; |
@@ -595,7 +569,12 @@ print_segment_itoa_large:
   and       r14, rcx                ; |
   sub       r11, rax                ; |
   sub       r14, rdx                ; | Fix the carried bytes
-  ; Convert from BCD to ASCII
+  jz        print_segment_convert_8byte
+print_segment_convert_16byte:
+  ; Convert from BCD to ASCII for all 16 bytes
+  bsr       r8, r14                 ; c = index of most significant bit
+  shr       r8, 3                   ; c = index of most significant byte
+  add       r8, 1+8                 ; c = #digits in bcd_buffer
   mov       rax, r11                ; |
   mov       rdx, r14                ; |
   bswap     rax                     ; |
@@ -616,16 +595,17 @@ print_segment_itoa_large:
   ; Clear rdx to prepare for the print_segment loop.
   xor       rdx, rdx
   jmp print_segment_loop
-print_segment_itoa_small:
-  ; Do an 8-byte BCD addition.
-  bcd_add   r11, rax, rdx           ; bcd_buffer += bcd_delta
-  ; Convert BCD to ASCII
+print_segment_convert_8byte:
+  ; Convert BCD to ASCII for just the lower 8 bytes
+  bsr       r8, r11                 ; c = index of most significant bit
+  shr       r8, 3                   ; c = index of most significant byte
+  add       r8, 1                   ; c = #digits in bcd_buffer
   mov       rax, r11                ; |
   bswap     rax                     ; | ascii_output = bcd_buffer in output byte order
   lea       rcx, [r8*8]             ; |
   rol       rax, cl                 ; | Shift out leading 0 bytes in ascii_output
-  mov       rcx, 0x3030303030303030 ; |
-  or        rax, rcx                ; | Add '0' to ascii_output chars
+  mov       rdx, 0x3030303030303030 ; |
+  or        rax, rdx                ; | Add '0' to ascii_output chars
   ; Write to output buffer
   mov       [rsi], rax              ; *buf = ascii_output (8 bytes)
   mov       [rsi+r8], byte `\n`     ; |
@@ -637,8 +617,6 @@ print_segment_itoa_small:
 
 print_segment_write:
   ; Save registers to stack variables.
-  mov       [rsp+OUTPUT_LEN_VAR], r8
-  mov       [rsp+NEXT_POW_VAR], r9
   mov       [rsp+BCD_BUFFER_16u8_VAR], r11
   mov       [rsp+BCD_BUFFER_16u8_VAR+8], r14
   mov       [rsp+PREV_PRIME_VAR], rdi

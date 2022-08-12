@@ -178,10 +178,10 @@ build_bcd_lookup:
   mov       rbx, rax                ; |
   mov       rdx, 0x60606060         ; | |
   and       rbx, rdx                ; | |
-  shr       rbx, 4                  ; | | Fix up the non-carried parts.
+  shr       rbx, 4                  ; | | Create the adjustment for non-carried bytes.
   mov       rdx, 0x0F0F0F0F         ; | |
-  and       rax, rdx                ; | | Isolate the carried parts.
-  sub       rax, rbx                ; | Combine carried and non-carried.
+  and       rax, rdx                ; | | Clear the carry information.
+  sub       rax, rbx                ; | Adjust for non-carried bytes.
                                     ; | bcd_n += bcd(2)
   add       rcx, 2                  ; n += 2
   cmp       rcx, MAX_PRIME_GAP      ; |
@@ -554,21 +554,21 @@ print_segment_itoa:
   mov       eax, [r10+rdx*2]        ; bcd_delta = bcd_even_lookup[delta/2]
   ; Do a 16-byte BCD addition. bcd_buffer += bcd_delta
   mov       rcx, 0xF6F6F6F6F6F6F6F6 ; |
-  add       r11, rax                ; |
+  add       r11, rax                ; | Ensure carries propogate to the next byte.
   add       r11, rcx                ; |
-  adc       r14, rcx                ; | Add with carry
+  adc       r14, rcx                ; | (Binary) add with carry
   mov       rax, r11
   mov       rdx, r14
   mov       rcx, 0x6060606060606060 ; |
   and       rax, rcx                ; |
   and       rdx, rcx                ; |
   shr       rax, 4                  ; |
-  shr       rdx, 4                  ; | Fix non-carried bytes
+  shr       rdx, 4                  ; | Create the adjustment for non-carried bytes.
   mov       rcx, 0x0F0F0F0F0F0F0F0F ; |
   and       r11, rcx                ; |
-  and       r14, rcx                ; |
+  and       r14, rcx                ; | Clear the carry information.
   sub       r11, rax                ; |
-  sub       r14, rdx                ; | Fix the carried bytes
+  sub       r14, rdx                ; | Adjust for non-carried bytes.
   jz        print_segment_convert_8byte
 print_segment_convert_16byte:
   ; Convert from BCD to ASCII for all 16 bytes

@@ -378,6 +378,8 @@ fill_template_array_end:
 collect_sieve_primes_inc:
   ; Find the next non-zero quad.
   add       r14, 8
+  cmp       r14, SEGMENT_SIZE_BYTES
+  jge       all_segments
 collect_sieve_primes:
   xor       rax, rax
   cmp       [r13+r14], rax
@@ -385,9 +387,14 @@ collect_sieve_primes:
   ; Find the LSB.
   mov       rdi, [r13+r14]
   bsf       rcx, rdi
-  ; We found a prime! Figure out the value.
-  ; NOTE: Wait until confirming this prime is part of the wheel beforing
-  ; unsetting it.
+  ; Unset the LSB.
+  lea       rax, [rdi-1]
+  and       rax, rdi
+  mov       [r13+r14], rax
+  ; We found a prime! Move it into the segment array.
+  xor       rax, rdi
+  or        [r8+r14], rax
+  ; Figure out the value of the prime.
   mov       rax, r14                ; |
   shl       rax, 3                  ; | convert from byte count to bit count.
   add       rcx, rax                ; |
@@ -396,68 +403,23 @@ collect_sieve_primes:
   ; as all the previous candidates have been cleared already.
   mov       rcx, r12                ; |
   imul      rcx, rcx                ; | c = p*p
-  ; If p*p is not in the segment, we have marked all the primes in the segment.
-  ; So we can just directly collect the rest.
-  cmp       rcx, SEGMENT_SIZE           ; |
-  jge       collect_large_sieve_primes  ; | if (p*p >= SEGMENT_SIZE) collect_large_sieve_primes
-  ; Unset the LSB.
-  lea       rax, [rdi-1]
-  and       rax, rdi
-  mov       [r13+r14], rax
-  ; Move the prime into the segment array.
-  xor       rax, rdi
-  or        [r8+r14], rax
   ; Shift c to account for the fact that the array only contains odd numbers.
   shr       rcx, 1                  ; c /= 2
 
   mini_wheel_position rsi, r12
+  ; If p*p is not in the segment, then we shouldn't clear anything.
+  cmp       rcx, SEGMENT_SIZE_BITS  ; |
+  jge       add_sieve_prime         ; | if (p*p >= SEGMENT_SIZE) add_sieve_prime
+
   mov       r9, SEGMENT_SIZE_BITS
   clear_prime_multiples USE_WHEEL_OFFSETS
 
+add_sieve_prime:
   mov       [r11+r15], rcx          ; sieve_primes[n/16].fst = m/2
   mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
   mov       [r11+r15+12], esi       ; sieve_primes[n/16].trd = i
   add       r15, 16                 ; n += 16
   jmp       collect_sieve_primes
-
-; Collect the rest of the primes in the first segment.
-; These primes are too large to affect the first segment.
-collect_large_sieve_primes:
-  jmp       collect_large_sieve_primes_loop
-collect_large_sieve_primes_inc:
-  ; Find the next non-zero quad.
-  add       r14, 8
-  cmp       r14, SEGMENT_SIZE_BYTES
-  jge       all_segments
-collect_large_sieve_primes_loop:
-  xor       rax, rax
-  cmp       [r13+r14], rax
-  je        collect_large_sieve_primes_inc
-  ; Find the LSB.
-  mov       rdi, [r13+r14]
-  bsf       rcx, rdi
-  ; Unset the LSB.
-  lea       rax, [rdi-1]
-  and       rax, rdi
-  mov       [r13+r14], rax
-  ; Move the prime into the segment array.
-  xor       rax, rdi
-  or        [r8+r14], rax
-  ; We found a prime! Figure out the value.
-  mov       rax, r14                ; |
-  shl       rax, 3                  ; | convert from byte count to bit count.
-  add       rcx, rax                ; |
-  lea       r12, [rcx+rcx+1]        ; | p = (c+x*8)*2+1
-  ; This prime is inside the segment, add it to sieved_primes.
-  mov       rax, r12                ; |
-  mul       rax                     ; | m = p*p (next mutiple to look at)
-  shr       rax, 1                  ; |
-  mov       [r11+r15], rax          ; | sieve_primes[n/16].fst = m/2
-  mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
-  mini_wheel_position rsi, r12      ; |
-  mov       [r11+r15+12], rsi       ; | sieve_primes[n/16].trd = mini_wheel_position(p)
-  add       r15, 16                 ; n += 16
-  jmp       collect_large_sieve_primes_loop
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Rest of the segments

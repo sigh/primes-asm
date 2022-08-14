@@ -25,10 +25,11 @@ extern    _pthread_mutex_unlock
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ; Our limit is 10^16 because our output routine can only deal with 16 digits.
-%assign MIN_SEGMENT_SIZE 128
-%assign MAX_SEGMENT_SIZE 100000000
-%assign MAX_LIMIT MAX_SEGMENT_SIZE*MAX_SEGMENT_SIZE
-%assign PRIMES_BELOW_MAX_SEGMENT_SIZE 5761455
+%assign MAX_LIMIT 10_000_000_000_000_000
+%assign PRIMES_REQUIRED_FOR_MAX_LIMIT 5761455
+; This is enough for any value less than 10^16.
+; See https://en.wikipedia.org/wiki/Prime_gap for table.
+%assign MAX_PRIME_GAP 1200
 
 ; Set a default limit or ensure it is not too large.
 %ifndef LIMIT
@@ -38,51 +39,37 @@ extern    _pthread_mutex_unlock
   %fatal "LIMIT is too large. Max is 10^16."
 %endif
 
-; Determine a SEGMENT_SIZE that can cover the current limit.
-; Minimum segment size is 128, allowing us to process the seive in 8-byte bitset
-; chunks (we skip all even numbers, thus 64 bits * 2 = 128).
-%assign SEGMENT_SIZE 128
-%rep 64
-  %if SEGMENT_SIZE*SEGMENT_SIZE >= LIMIT
+%ifndef SEGMENT_SIZE
+  %define SEGMENT_SIZE (1<<20)
+%endif
+%if (SEGMENT_SIZE)&127 != 0
+  %fatal "SEGMENT_SIZE must be multiple of 128"
+%endif
+%if (SEGMENT_SIZE)*(SEGMENT_SIZE) > MAX_LIMIT
+  %fatal "SEGMENT_SIZE must be <= 10^8"
+%endif
+; This works for any SEGMENT_SIZE >= 128.
+%assign MAX_PRIMES_PER_SEGMENT (SEGMENT_SIZE)/4
+
+; Figure out how much space to allocate for sieve primes.
+%assign MAX_SIEVE_PRIMES 128
+%rep 30
+  %if MAX_SIEVE_PRIMES*MAX_SIEVE_PRIMES*(4*4) > LIMIT
     %exitrep
   %endif
-  ; Keep doubling until we reach the target.
-  %assign SEGMENT_SIZE SEGMENT_SIZE*2
-  ; Ensure that we don't get too large.
-  %if SEGMENT_SIZE > MAX_SEGMENT_SIZE
-    %assign SEGMENT_SIZE MAX_SEGMENT_SIZE
-  %endif
+  %assign MAX_SIEVE_PRIMES MAX_SIEVE_PRIMES*2
 %endrep
-
-; Allow the segment size to be overridden.
-%ifdef SEGMENT_OVERRIDE
-  %if (SEGMENT_OVERRIDE)&127 != 0
-    %fatal "SEGMENT_OVERRIDE must be multiple of 128"
-  %endif
-  %if (SEGMENT_OVERRIDE)*(SEGMENT_OVERRIDE) < LIMIT
-    %fatal "SEGMENT_OVERRIDE*SEGMENT_OVERRIDE must be >= LIMIT"
-  %endif
-  %if (SEGMENT_OVERRIDE) > MAX_SEGMENT_SIZE
-    %fatal "SEGMENT_OVERRIDE must be < 10^8"
-  %endif
-  %assign SEGMENT_SIZE SEGMENT_OVERRIDE
+%if MAX_SIEVE_PRIMES < MAX_PRIMES_PER_SEGMENT
+  %assign MAX_SIEVE_PRIMES MAX_PRIMES_PER_SEGMENT
+%endif
+%if MAX_SIEVE_PRIMES > PRIMES_REQUIRED_FOR_MAX_LIMIT
+  %assign MAX_SIEVE_PRIMES PRIMES_REQUIRED_FOR_MAX_LIMIT
 %endif
 
-; The minimum SEGMENT_SIZE=128 which has density < 4.
-%assign MAX_PRIMES_PER_SEGMENT SEGMENT_SIZE/4
-; However, cap it at the max value our program is capable of reaching.
-; This is necessary to get the program to compile, otherwise the memory
-; allocations get too large.
-%if MAX_PRIMES_PER_SEGMENT > PRIMES_BELOW_MAX_SEGMENT_SIZE
-  %assign MAX_PRIMES_PER_SEGMENT PRIMES_BELOW_MAX_SEGMENT_SIZE
-%endif
 SEARCH_LIMIT           equ LIMIT
 SEARCH_LIMIT_BITS      equ SEARCH_LIMIT/2
-SEGMENT_SIZE_BITS      equ SEGMENT_SIZE/2
+SEGMENT_SIZE_BITS      equ (SEGMENT_SIZE)/2
 SEGMENT_SIZE_BYTES     equ SEGMENT_SIZE_BITS/8
-; This is enough for any value less than 10^16.
-; See https://en.wikipedia.org/wiki/Prime_gap for table.
-MAX_PRIME_GAP          equ 1200
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Constants and helpers
@@ -98,11 +85,13 @@ SEARCH_LIMIT_BITS_VAR  equ 8  ; 8 bytes
 WHEEL_SIZE_BITS_VAR    equ 16 ; 8 bytes
 WHEEL_DEC_BITS_VAR     equ 24 ; 4 bytes
 WHEEL_OFFSET_BITS_VAR  equ 28 ; 4 bytes
-SIEVE_PRIMES_BYTES_VAR equ 32 ; 8 bytes
-BCD_BUFFER_16u8_VAR    equ 40 ; 16 byte Binary-Coded Decimal output buffer.
-PREV_PRIME_VAR         equ 56 ; 8 bytes
+BCD_BUFFER_16u8_VAR    equ 32 ; 16 byte Binary-Coded Decimal output buffer.
+PREV_PRIME_VAR         equ 48 ; 8 bytes
+SIEVE_PRIMES_BYTES_VAR equ 56 ; 8 bytes TODO: This is only 4 bytes.
+SIEVE_PRIMES_END_VAR   equ 64 ; 8 bytes
+SIEVE_PRIMES_DONE_VAR  equ 72 ; 1 byte
 ; Stack size.
-STACK_VAR_BYTES        equ 64
+STACK_VAR_BYTES        equ 80
 
 WRITE_STATE_GENERATE   equ 0
 WRITE_STATE_OUTPUT     equ 1
@@ -439,11 +428,9 @@ add_sieve_prime:
 ; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
 all_segments:
-  ; Add a sentinel to the end of the sieve_primes array which will compare
-  ; greater than any value we encounter.
-  mov       rax, -1
-  mov       [r11+r15], rax          ; | sieve_primes[n/16].fst = max_u64
-  mov       [r11+r15+8], rax        ; | sieve_primes[n/16].{snd,trd} = max_u64
+  ; Remember where the end of sieve primes is and mark as not yet finished.
+  mov       [rsp+SIEVE_PRIMES_END_VAR], r15
+  mov       [rsp+SIEVE_PRIMES_DONE_VAR], byte 0
   ; Reset n back to 0. We will increase it as required so we don't have to
   ; check portions of the array which aren't used yet.
   xor       r15, r15
@@ -521,7 +508,7 @@ update_sieve_primes_limit:
 align 64
 handle_segment_loop:
   cmp       r14, r15
-  jge       print_segment           ; if (x >= n) print_segment
+  jge       found_segment_primes    ; if (x >= n) found_segment_primes
   add       r14, 16                 ; x += 16
   mov       rcx, [r11+r14-16]       ; m/2 = sieve_primes[x/16].fst
   ; Check if this multiple is too large for the segment.
@@ -540,6 +527,60 @@ handle_segment_loop:
   mov       [r11+r14-4], esi        ; | i
   jmp       handle_segment_loop
 
+; We've found all the primes in the segment.
+found_segment_primes:
+  ; Check if we still need to collect more sieve primes.
+  cmp       [rsp+SIEVE_PRIMES_DONE_VAR], byte 0
+  jne        print_segment
+  ; Initilize loop variables.
+  mov       r15, [rsp+SIEVE_PRIMES_END_VAR] ; n
+  xor       r9, r9                  ; x = 0
+  mov       r10, [r13]              ; current_array_value = array[0]
+  jmp       .add_sieve_primes_loop
+.add_sieve_primes_inc:
+  ; Find the next non-zero quad.
+  add       r9, 8                   ; x += 8
+  mov       r10, [r13+r9]           ; current_array_value = array[x]
+.add_sieve_primes_loop:
+  cmp       r10, 0
+  je        .add_sieve_primes_inc
+  ; Find the LSB.
+  bsf       rcx, r10
+  ; Unset the LSB.
+  lea       rax, [r10-1]
+  and       r10, rax
+  ; Check if we've reached the end of the segment.
+  lea       rcx, [rcx+r9*8]         ; |
+  add       rcx, r8                 ; | c = c+x*8+array_start_bits
+  cmp       rcx, rbx                ; |
+  jge       .done                   ; | if (c > segment_limit) .done
+  ; We found a prime! Figure out the value.
+  lea       r12, [rcx+rcx+1]        ; | p = c*2+1
+  ; Check if the first multiple is larger than the LIMIT
+  mov       rax, r12                ; |
+  mul       rax                     ; |
+  shr       rax, 1                  ; | a = p*p/2
+  cmp       rax, [rsp+SEARCH_LIMIT_BITS_VAR]
+  jge       .finalize_sieve_primes
+  ; Update sieve_primes.
+  mov       rcx, rax
+  mini_wheel_position rsi, r12
+  mov       [r11+r15], rcx          ; sieve_primes[n/16].fst = m/2
+  mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
+  mov       [r11+r15+12], esi       ; sieve_primes[n/16].trd = i
+  add       r15, 16                 ; n += 16
+  jmp .add_sieve_primes_loop
+.finalize_sieve_primes:
+  ; Add a sentinel to the end of the sieve_primes array which will compare
+  ; greater than any value we encounter.
+  mov       rax, -1                 ; |
+  mov       [r11+r15], rax          ; | sieve_primes[n/16].fst = max_u64
+  mov       [r11+r15+8], rax        ; | sieve_primes[n/16].{snd,trd} = max_u64
+  ; Set flag to say we no longer need to look for sieve primes.
+  mov       [rsp+SIEVE_PRIMES_DONE_VAR], byte 1
+.done:
+  mov       [rsp+SIEVE_PRIMES_END_VAR], r15
+
 ; Print the primes in the current segment.
 print_segment:
   ; Use r15 for array_start_bits
@@ -551,6 +592,8 @@ print_segment:
 %endif
   ; Load the (now unused) print buffer.
   lea       rsi, [rel print_buffer]          ; buf = print_buffer
+  ; Set it to the empty string in case we have no primes to print.
+  mov       [rsi], byte 0                    ; *buf = 0
   ; Load registers from stack variables.
   mov       r11, [rsp+BCD_BUFFER_16u8_VAR]   ; |
   mov       r14, [rsp+BCD_BUFFER_16u8_VAR+8] ; | bcd_buffer
@@ -890,7 +933,7 @@ sieve_primes:
   ;        fit in 32 bits.
   ;        Storing it like this allows us to make the inner clearing loop smaller.
   ; Leave room for a sentinel at the end.
-  resb (MAX_PRIMES_PER_SEGMENT+1)*16
+  resb (MAX_SIEVE_PRIMES+1)*16
 
 ; Lookup table for the Binary-Coded Decimal representation of even n where each
 ; decimal digit is 1 byte.
@@ -901,6 +944,7 @@ bcd_even_lookup:
   resd MAX_PRIME_GAP/2
 
 ; Buffer space to write the output string.
+  resb 1  ; Allow one negative index.
   alignb 64
 print_buffer:
   ; The max size of each entry is 16 digits + a newline.

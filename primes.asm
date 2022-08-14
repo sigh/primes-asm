@@ -207,7 +207,7 @@ WRITE_STATE_OUTPUT     equ 1
 
 ; Determine the starting offset for the mini-wheel.
 ; The input to this is always a prime <p> the wheel shows the offset of the
-; factor of <p> we are multipying by, and we always start at p*p.
+; value we are multipying by, and we always start at p*p.
 ; mini_wheel_position <result> <p>
 %macro mini_wheel_position 2
     mov     rax, 9838263505978427529 ; |
@@ -450,7 +450,7 @@ collect_large_sieve_primes_loop:
   lea       r12, [rcx+rcx+1]        ; | p = (c+x*8)*2+1
   ; This prime is inside the segment, add it to sieved_primes.
   mov       rax, r12                ; |
-  mul       rax                     ; | m = p*p (next factor to look at)
+  mul       rax                     ; | m = p*p (next mutiple to look at)
   shr       rax, 1                  ; |
   mov       [r11+r15], rax          ; | sieve_primes[n/16].fst = m/2
   mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
@@ -533,8 +533,8 @@ handle_segment_loop:
   mov       rcx, [r11+r14-16]       ; m/2 = sieve_primes[x/16].fst
   ; Check if this multiple is too large for the segment.
   ; Required because clear_primes_multiples does an unconditional first iteration.
-  ; Note: Because factors increment by 2*p, we start skipping segments when the
-  ;       primes get large.
+  ; Note: Because multiples increment by 2*p, we start skipping segments when
+  ;       the primes get large.
   cmp       rcx, rbx
   jge       handle_segment_loop
   mov       r12d, [r11+r14-8]       ; p = sieve_primes[x/16].snd

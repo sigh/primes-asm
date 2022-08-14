@@ -22,15 +22,31 @@ To disable threading, compile with `-DTHREADING=0`.
 
 ## Algorithm
 
+### Overview
+
+Sieve of Eratosthenes with the following optimizations:
+
+* Segment with ~`sqrt(N)` size segments.
+
+* Pre-cull small primes with a wheel of size ~`sqrt(N)`.
+
+* Skip redudant factors while sieving using a length 30 (2-3-5) wheel.
+
+* Compress sieve by storing only odd numbers, with one bit per number.
+
+* Optimize generation of decimal output using BCD arithmetic.
+
+* Use a dedicated thread for writing to `stdout`.
+
 ### Segmentation
 
-To seive all primes up to `LIMIT` we only need `sqrt(LIMIT)` primes to do the sieving. To reduce memory, we can also process the rest of the numbers in segments of ~`sqrt(LIMIT)` without changing the time complexity.
+To seive all primes up to `LIMIT` we only need `sqrt(LIMIT)` primes to do the sieving. To reduce memory, we can also process the rest of the numbers in segments of size ~`sqrt(LIMIT)` without changing the time complexity.
 
 In this program `SEGMENT_SIZE` is chosen to be smallest power of 2 larger than `sqrt(LIMIT)`.
 
 ### Prime generation
 
-Note: In these steps, sieving of factors always starts from the square of the primes. All smaller factors would have been sieved by smaller primes.
+Note: In these steps, sieving of multiples always starts from the square of the primes. All smaller multiples would have been sieved by smaller primes.
 
 Prime generation is split up into 3 phases.
 
@@ -52,6 +68,16 @@ Prime generation is split up into 3 phases.
    * Initialize the segment by copying the wheel template. In general, the segment will be some offset into the wheel.
    * Determine how many sieve primes are relevant to this segment. This way we can ignore sieve primes which are too large to affect the segment.
    * Sieve the sieve primes from the segment, and update their sieve factor.
+
+### Sieving loop
+
+The segment is represented as a bitset where each bit represents an odd number.
+
+For each multiple of each prime the sieving loop must turn off the bit at the correct offset into the segment array.
+This is more expensive than if the array used bytes instead of bits but this helps with data locality and caching so overall it performs similarly or slightly better. However it does reduce the memory usage.
+
+In addition, a 30-length (2-3-5) wheel is used to skip redundant multiples of the prime. Before each invocation of the inner seiving loop, an 8 element array is precomputed for determining the increment at each iteration.
+The relative offset into this wheel is stored alongside the prime as the state must persis between segments.
 
 ### Output
 

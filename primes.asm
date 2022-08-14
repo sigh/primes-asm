@@ -147,11 +147,90 @@ WRITE_STATE_OUTPUT     equ 1
   rep movsq
 %endmacro
 
-section   .text
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Sieve loop macros
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+%define USE_WHEEL_OFFSETS 1
+%define IGNORE_WHEEL_OFFSETS 0
+
+; clear_prime_multiples <USE_WHEEL_OFFSETS|IGNORE_WHEEL_OFFSETS>
+; Clear values f*p where f is in the mini-wheel.
+; This clears bits c+f'*p from the segment_array.
+; The following registers must be populated.
+;   r13: segment_array
+;   r12: p    - prime being sieved
+;   rcx: c    - offset of next candidate
+;   r9: limit - loop while (c < limit)
+;   rsi: i    -  index into mini_wheel_deltas
+; The following registers are used (and not restored):
+;   rax, rdx, rdi
+%macro clear_prime_multiples 1
+.fill_mini_wheel_deltas:
+  ; Fill mini-wheel with the appropriate prime multiples.
+  ; The mini-wheel has 30 numbers, which has length 15 since we only store odd numbers.
+    ; Wheel offsets: 1, 7, 11, 13, 17, 19, 23, 29
+    ; Divide by 2  : 0, 3, 5,  6,  8,  9,  11, 14
+    ; Deltas       : 3, 2, 1,  2,  1,  2,  3,  1
+  %if %1 == USE_WHEEL_OFFSETS
+    lea       rdi, [rel mini_wheel_deltas]
+    lea       rax, [r12+r12]
+    ; p
+    mov       [rdi+8*2], r12
+    mov       [rdi+8*4], r12
+    mov       [rdi+8*7], r12
+    ; p*2
+    mov       [rdi+8*1], rax
+    mov       [rdi+8*3], rax
+    mov       [rdi+8*5], rax
+    ; p*3
+    lea       rax, [rax+r12]
+    mov       [rdi+8*0], rax
+    mov       [rdi+8*6], rax
+  %endif
+.clear_prime_multiples_loop:
+  mov       rdx, -2                 ; |
+  mov       rax, rcx                ; |
+  rol       dl, cl                  ; | d = ~(1<<(c&8)) (Important: register width MUST match shift amount.)
+  shr       rax, 3                  ; |
+  and       [r13+rax], dl           ; | segment_array[c/8] &= ~(1<<(c&8))
+  %if %1 == USE_WHEEL_OFFSETS
+    add       rcx, [rdi+rsi*8]      ; a += mini_wheel_deltas[i] (a += k*p)
+    add       esi, 1                ; |
+    and       esi, 7                ; | i = (i+1)%8
+  %else
+    add       rcx, r12              ; a += p
+  %endif
+  cmp       rcx, r9                     ; |
+  jl        .clear_prime_multiples_loop ; | if (c < (limit)) continue
+%endmacro
+
+; Determine the starting offset for the mini-wheel.
+; The input to this is always a prime <p> the wheel shows the offset of the
+; factor of <p> we are multipying by, and we always start at p*p.
+; mini_wheel_position <result> <p>
+%macro mini_wheel_position 2
+    mov     rax, 9838263505978427529 ; |
+    mul     %2                       ; |
+    shr     rdx, 4                   ; | d = p/30
+    mov     rax, %2                  ; |
+    shr     rax, 1                   ; | a = p/2
+    lea     rdx, [rdx + 4*rdx]       ; |
+    lea     rdx, [rdx + 2*rdx]       ; | d = p/30*15
+    sub     rax, rdx                 ; a = (p%30)/2 = (p/2)%15 = p/2 - (p/2)/15*15
+    ; result = mini_wheel_position_lookup[a]
+    lea     rdx, [rel mini_wheel_position_lookup]
+    movsx   %1, byte [rdx+rax]
+    ; result == -1 indicates we have a bug.
+    cmp     %1, -1
+    je      fatal
+%endmacro
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Initialize program
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+section   .text
 
 _main:
   push      rsp                      ; Required for alignment
@@ -244,80 +323,10 @@ collect_wheel_primes:
   ; Shift c to account for the fact that the array only contains odd numbers.
   shr       rcx, 1                  ; | c /= 2
 
-; Determine the starting offset for the mini-wheel.
-; The input to this is always a prime <p> the wheel shows the offset of the
-; factor of <p> we are multipying by, and we always start at p*p.
-; mini_wheel_position <p>
-%macro mini_wheel_position 1
-    mov     rax, 9838263505978427529 ; |
-    mul     %1                       ; |
-    shr     rdx, 4                   ; | d = p/30
-    mov     rax, %1                  ; |
-    shr     rax, 1                   ; | a = p/2
-    lea     rdx, [rdx + 4*rdx]       ; |
-    lea     rdx, [rdx + 2*rdx]       ; | d = p/30*15
-    sub     rax, rdx                 ; a = (p%30)/2 = (p/2)%15 = p/2 - (p/2)/15*15
-    ; a = wheel_lookup[a]
-    lea     rdx, [rel mini_wheel_position_lookup]
-    movsx   rax, byte [rdx+rax]  ; TODO: Consolidate adds (don't need move from c)
-    cmp     rax, -1
-    je      fatal
-%endmacro
-
-; Fill mini-wheel with the appropriate prime multiples.
-; The mini-wheel has 30 numbers, which has length 15 since we only store odd numbers.
-   ; Wheel offsets: 1, 7, 11, 13, 17, 19, 23, 29
-   ; Divide by 2  : 0, 3, 5,  6,  8,  9,  11, 14
-   ; Deltas       : 3, 2, 1,  2,  1,  2,  3,  1
-%macro fill_mini_wheel_deltas 0
-  lea       rdi, [rel mini_wheel_deltas]
-  lea       rax, [r12+r12]
-  ; p
-  mov       [rdi+8*2], r12
-  mov       [rdi+8*4], r12
-  mov       [rdi+8*7], r12
-  ; p*2
-  mov       [rdi+8*1], rax
-  mov       [rdi+8*3], rax
-  mov       [rdi+8*5], rax
-  ; p*3
-  lea       rax, [rax+r12]
-  mov       [rdi+8*0], rax
-  mov       [rdi+8*6], rax
-%endmacro
-
-; Clear values f*p where f is even.
-; This clears bits c+m*p from the segment_array at r13.
-;   Where c = rcx, p = r12
-;   mini_wheel_deltas is used to determine how much to increment m each time.
-;   rsi is the offset into mini_wheel_deltas.
-; clear_prime_multiples <limit>
-%macro clear_prime_multiples 1
-.clear_prime_multiples_loop:
-  mov       rdx, -2                 ; |
-  mov       rax, rcx                ; |
-  rol       dl, cl                  ; | d = ~(1<<(c&8)) (Important: register width MUST match shift amount.)
-  shr       rax, 3                  ; |
-  and       [r13+rax], dl           ; | segment_array[c/8] &= ~(1<<(c&8))
-  add       rcx, [rdi+rsi*8]        ; a += mini_wheel_deltas[i] (a += k*p)
-  add       rsi, 1                  ; |
-  and       rsi, 7                  ; | i = (i+1)%8
-  cmp       rcx, %1                     ; |
-  jl        .clear_prime_multiples_loop ; | if (c < (limit)) continue
-%endmacro
-
-  ; For the wheeel primes, we don't want to exclude the mini-wheel multiples.
-  lea       rdi, [rel mini_wheel_deltas]
-  mov       [rdi+8*0], r12
-  mov       [rdi+8*1], r12
-  mov       [rdi+8*2], r12
-  mov       [rdi+8*3], r12
-  mov       [rdi+8*4], r12
-  mov       [rdi+8*5], r12
-  mov       [rdi+8*6], r12
-  mov       [rdi+8*7], r12
-  xor       rsi, rsi
-  clear_prime_multiples SEGMENT_SIZE_BITS
+  mov       r9, SEGMENT_SIZE_BITS
+  ; NOTE: We ignore wheel offsets because some of these primes will be in the
+  ;       mini-wheel.
+  clear_prime_multiples IGNORE_WHEEL_OFFSETS
   ; NOTE: We don't store wheel primes in sieve_primes, as they are automatically
   ;       excluded by the wheel.
   jmp collect_wheel_primes
@@ -401,12 +410,11 @@ collect_sieve_primes:
   ; Shift c to account for the fact that the array only contains odd numbers.
   shr       rcx, 1                  ; c /= 2
 
-  mini_wheel_position r12
-  mov       rsi, rax
-  fill_mini_wheel_deltas
-  clear_prime_multiples SEGMENT_SIZE_BITS
+  mini_wheel_position rsi, r12
+  mov       r9, SEGMENT_SIZE_BITS
+  clear_prime_multiples USE_WHEEL_OFFSETS
 
-  mov       [r11+r15], rcx          ; sieve_primes[n/16].fst = f/2
+  mov       [r11+r15], rcx          ; sieve_primes[n/16].fst = m/2
   mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
   mov       [r11+r15+12], esi       ; sieve_primes[n/16].trd = i
   add       r15, 16                 ; n += 16
@@ -442,12 +450,12 @@ collect_large_sieve_primes_loop:
   lea       r12, [rcx+rcx+1]        ; | p = (c+x*8)*2+1
   ; This prime is inside the segment, add it to sieved_primes.
   mov       rax, r12                ; |
-  mul       rax                     ; | f = p*p (next factor to look at)
+  mul       rax                     ; | m = p*p (next factor to look at)
   shr       rax, 1                  ; |
-  mov       [r11+r15], rax          ; | sieve_primes[n/16].fst = f/2
+  mov       [r11+r15], rax          ; | sieve_primes[n/16].fst = m/2
   mov       [r11+r15+8], r12d       ; sieve_primes[n/16].snd = p
-  mini_wheel_position r12           ; |
-  mov       [r11+r15+12], rax       ; | sieve_primes[n/16].trd = mini_wheel_position(p)
+  mini_wheel_position rsi, r12      ; |
+  mov       [r11+r15+12], rsi       ; | sieve_primes[n/16].trd = mini_wheel_position(p)
   add       r15, 16                 ; n += 16
   jmp       collect_large_sieve_primes_loop
 
@@ -522,7 +530,7 @@ handle_segment_loop:
   cmp       r14, r15
   jge       print_segment           ; if (x >= n) print_segment
   add       r14, 16                 ; x += 16
-  mov       rcx, [r11+r14-16]       ; f/2 = sieve_primes[x/16].fst
+  mov       rcx, [r11+r14-16]       ; m/2 = sieve_primes[x/16].fst
   ; Check if this multiple is too large for the segment.
   ; Required because clear_primes_multiples does an unconditional first iteration.
   ; Note: Because factors increment by 2*p, we start skipping segments when the
@@ -531,12 +539,11 @@ handle_segment_loop:
   jge       handle_segment_loop
   mov       r12d, [r11+r14-8]       ; p = sieve_primes[x/16].snd
   mov       esi, [r11+r14-4]        ; i = sieve_primes[x/16].trd
-  sub       rcx, r8                 ; c = f/2-array_start_bits
+  sub       rcx, r8                 ; c = m/2-array_start_bits
 
-  fill_mini_wheel_deltas
-  clear_prime_multiples r9
-  add       rcx, r8                 ; | Save the updated value of f back.
-  mov       [r11+r14-16], rcx       ; | f/2 = c+array_start_bits
+  clear_prime_multiples USE_WHEEL_OFFSETS
+  add       rcx, r8                 ; | Save the updated value of m back.
+  mov       [r11+r14-16], rcx       ; | m/2 = c+array_start_bits
   mov       [r11+r14-4], esi        ; | i
   jmp       handle_segment_loop
 
@@ -851,7 +858,7 @@ writer_state:
 
 ; Array to populate wheel deltas. In the clearance loop, this is pre-populated
 ; multiples of the primes we are clearing.
-  align 8
+  align 64
 mini_wheel_deltas:
   times 8 dq 0
 
@@ -916,11 +923,11 @@ initial_segment_array:
 ; Primes used for sieving.
   alignb 64
 sieve_primes:
-  ; Store pairs (f/2: u64, p: u32, i: u32) where:
-  ;  - f is the next candidate to be removed
+  ; Store pairs (m/2: u64, p: u32, i: u32) where:
+  ;  - m is the next candidate to be removed
   ;  - p is the prime
   ;  - i is the mini-wheel index: i in range [0, 15)
-  ;  NOTE: It's difficult to find a way to represent f so that it will reliably
+  ;  NOTE: It's difficult to find a way to represent m so that it will reliably
   ;        fit in 32 bits.
   ;        Storing it like this allows us to make the inner clearing loop smaller.
   ; Leave room for a sentinel at the end.

@@ -16,7 +16,7 @@ nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 
 Compile with `-DLIMIT=<limit>` to generate primes up to `LIMIT`. Maximum size of `LIMIT` is 10^16 (or set `-DLIMIT=MAX_LIMIT`).
 
-By default, a dedicated thread for writing the output. For smaller limits
+By default a dedicated thread for writing the output. For smaller limits
 (e.g. smaller than the default of 2^32), the overhead may add time.
 To disable threading, compile with `-DTHREADING=0`.
 

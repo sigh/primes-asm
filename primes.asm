@@ -381,8 +381,7 @@ collect_sieve_primes_inc:
   cmp       r14, SEGMENT_SIZE_BYTES
   jge       all_segments
 collect_sieve_primes:
-  xor       rax, rax
-  cmp       [r13+r14], rax
+  cmp       qword [r13+r14], 0
   je        collect_sieve_primes_inc
   ; Find the LSB.
   mov       rdi, [r13+r14]
@@ -425,6 +424,18 @@ add_sieve_prime:
 ;; Rest of the segments
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+%macro common_handle_segment_loop_prologue 0
+  ; Add a sentinel to the end of segment_array so that there can be fewer
+  ; loop condition checks.
+  mov       [r13+SEGMENT_SIZE_BYTES+8], byte 0xFF
+  ; If we've reached our search limit, then truncate the segment.
+  cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; |
+  cmovg     rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; | segment_limit = min(
+                                              ; |   segment_end_bits,
+                                              ; |   search_limit_bits
+                                              ; | )
+%endmacro
+
 ; Now that we've found the sieve primes, iterate over all segments find the
 ; rest.
 all_segments:
@@ -443,9 +454,13 @@ all_segments:
   mov       [rsp+BCD_BUFFER_16u8_VAR], rcx    ; |
   mov       [rsp+BCD_BUFFER_16u8_VAR+8], rax  ; | bcd_buffer = 1
   mov       [rsp+PREV_PRIME_VAR], rcx         ; | prev_prime = 1
-  ; We want to use print_segment for the first segment as well.
+  ; Prepare segment offsets.
   mov       rbx, SEGMENT_SIZE_BITS            ; segment_end_bits = segment_size_bits
+  ; Set up preparations for print_segment.
   lea       r13, [rel segment_array]
+  mov       r8, 0                             ; array_start_bits = 0
+  common_handle_segment_loop_prologue
+  ; We want to use print_segment for the first segment as well.
   jmp       print_segment
 
 all_segments_loop:
@@ -481,11 +496,27 @@ update_sieve_primes_limit:
   cmovl     eax, [rsp+WHEEL_SIZE_BITS_VAR]   ; |
   add       edx, eax                         ; | if (offset < 0) offset += w
   mov       [rsp+WHEEL_OFFSET_BITS_VAR], edx ; |
+  ; Initialize r13 as segment_array.
+  ; Move r13 forward so that the first 8-byte section is valid.
+  ; Adjust offset to account for this.
+  lea       r13, [rel segment_array]
+  mov       rax, rdx                  ; a = wheel_offset_bits
+  and       rax, -64                  ; align a at an 8-byte boundary.
+  shr       rax, 3                    ; |
+  add       r13, rax                  ; | *sieve_array += a/8
+  shl       rax, 3                    ; |
+  sub       rdx, rax                  ; | byte_offset_bits = wheel_offset_bits-a
+  ; Zero out the bits in [r13] before the segment start.
+  ; This is required so that they aren't considered primes later.
+  mov       rcx, rdx                  ; |
+  shr       qword [r13], cl           ; |
+  shl       qword [r13], cl           ; | Clear the first CL bits.
   ; Initialize remaining loop registers.
   lea       r8, [rbx-SEGMENT_SIZE_BITS] ; |
   sub       r8, rdx                     ; | array_start_bits = segment_start_bits-array_offset_bits
   lea       r9, [rdx+SEGMENT_SIZE_BITS] ; | wheel_end_bits (where to stop clearing).
-  lea       r13, [rel segment_array]
+  ; Common pre-loop setup
+  common_handle_segment_loop_prologue
 
 align 64
 handle_segment_loop:
@@ -511,6 +542,8 @@ handle_segment_loop:
 
 ; Print the primes in the current segment.
 print_segment:
+  ; Use r15 for array_start_bits
+  mov       r15, r8
 %if THREADING == 1
   ; Wait until the writer is no longer using the print_buffer.
   mov       rdi, WRITE_STATE_GENERATE
@@ -518,63 +551,28 @@ print_segment:
 %endif
   ; Load the (now unused) print buffer.
   lea       rsi, [rel print_buffer]          ; buf = print_buffer
-  lea       r10, [rel bcd_even_lookup]
   ; Load registers from stack variables.
   mov       r11, [rsp+BCD_BUFFER_16u8_VAR]   ; |
   mov       r14, [rsp+BCD_BUFFER_16u8_VAR+8] ; | bcd_buffer
   mov       rdi, [rsp+PREV_PRIME_VAR]
-  ; Determine the wheel alignment
-  mov       r15d, [rsp+WHEEL_OFFSET_BITS_VAR]
-  ; Move r13 forward so that the first 8-byte section is valid.
-  ; Adjust r15 to account for this.
-  mov       rax, r15                  ; a = wheel_offset_bits
-  and       rax, -64                  ; align a at an 8-byte boundary.
-  shr       rax, 3                    ; |
-  add       r13, rax                  ; | *sieve_array += a/8
-  shl       rax, 3                    ; |
-  ; Zero out the bits in [r13] before the segment start.
-  ; This is required so that they aren't considered primes.
-  mov       rcx, r15                  ; |
-  sub       rcx, rax                  ; | byte_offset_bits = wheel_offset_bits-a
-  shr       qword [r13], cl           ; |
-  shl       qword [r13], cl           ; | Clear the first CL bits.
-  ; Calculate the global offset
-  sub       r15, rbx                  ; |
-  add       r15, SEGMENT_SIZE_BITS    ; | global_offset = wheel_offset_bits - segment_start_bits
-
-  ; Put a sentinel at the end to avoid an extra loop check.
-  mov       [r13+SEGMENT_SIZE_BYTES+8], byte 0xFF
-
-  ; If we've reached our search limit, then truncate the segment.
-  cmp       rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; |
-  cmovg     rbx, [rsp+SEARCH_LIMIT_BITS_VAR]  ; | segment_limit = min(
-                                              ; |   segment_end_bits,
-                                              ; |   search_limit_bits
-                                              ; | )
-
-  xor       rdx, rdx
-  sub       r13, 8
-align 16
+  ; Initialize loop registers.
+  mov       r9, -8                  ; x = -8 (x will start at 0).
 print_segment_loop_inc:
   ; Find the next non-zero quad.
-  add       r13, 8
+  add       r9, 8                   ; x += 8
+  mov       r10, [r13+r9]           ; current_value = array[x]
 print_segment_loop:
-  ; NOTE: rdx must be cleared before calling print_segment_loop
-  add       rdx, [r13]
-  jz        print_segment_loop_inc
+  cmp       r10, 0
+  je        print_segment_loop_inc
   ; Find the LSB.
-  bsf       rcx, rdx
+  bsf       rcx, r10
   ; Unset the LSB.
-  lea       rax, [rdx-1]
-  and       rax, rdx
-  mov       [r13], rax
+  lea       rax, [r10-1]
+  and       r10, rax
 print_segment_found:
   ; We found a prime! Figure out the value.
-  lea       rax, [rel segment_array]         ; | (let x be the current loop iteration in bytes)
-  sub       rax, r13                         ; | a = -(x+wheel_offset_bits/8)
-  shl       rax, 3                           ; | Convert from byte count to bit count.
-  sub       rcx, rax                         ; |
-  sub       rcx, r15                         ; | c = c+x*8+segment_start_bits
+  lea       rcx, [rcx+r9*8]                  ; |
+  add       rcx, r15                         ; | c = c+x*8+array_start_bits
   cmp       rcx, rbx                         ; |
   jge       print_segment_write              ; | if (c > segment_limit) print_segment_write
   lea       r12, [rcx+rcx+1]                 ; | p = c*2+1
@@ -583,7 +581,8 @@ print_segment_itoa:
   mov       rdx, r12                ; | delta = p
   sub       rdx, rdi                ; | delta = p-prev
   mov       rdi, r12                ; | p = prev
-  mov       eax, [r10+rdx*2]        ; bcd_delta = bcd_even_lookup[delta/2]
+  lea       rax, [rel bcd_even_lookup] ; |
+  mov       eax, [rax+rdx*2]           ; | bcd_delta = bcd_even_lookup[delta/2]
   ; Do a 16-byte BCD addition. bcd_buffer += bcd_delta
   mov       rcx, 0xF6F6F6F6F6F6F6F6 ; |
   add       r11, rax                ; | Ensure carries propogate to the next byte.
@@ -624,8 +623,6 @@ print_segment_convert_16byte:
   mov       [rsi+r8], byte `\n`     ; |
   lea       rsi, [rsi+r8+1]         ; | Adjust buf so that only the desired
                                     ; | number of digits is kept.
-  ; Clear rdx to prepare for the print_segment loop.
-  xor       rdx, rdx
   jmp print_segment_loop
 print_segment_convert_8byte:
   ; Convert BCD to ASCII for just the lower 8 bytes

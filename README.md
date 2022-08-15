@@ -14,11 +14,13 @@ Run (on macOS) with:
 nasm -fmacho64 primes.asm && gcc primes.o && ./a.out
 ```
 
-Compile with `-DLIMIT=<limit>` to generate primes up to `LIMIT`. Maximum size of `LIMIT` is 10^16.
+Compile with `-DLIMIT=<limit>` to generate primes up to `LIMIT`. Maximum size of `LIMIT` is 10^16 (or set `-DLIMIT=MAX_LIMIT`).
 
 By default, a dedicated thread for writing the output. For smaller limits
 (e.g. smaller than the default of 2^32), the overhead may add time.
 To disable threading, compile with `-DTHREADING=0`.
+
+By default `SEGMENT_SIZE` is 2^20, but can be overridden with `-DSEGMENT_SIZE=<size>`. A segment takes ~`SEGMENT_SIZE/16` bytes which is the main working set in the inner loop.
 
 ## Algorithm
 
@@ -26,9 +28,9 @@ To disable threading, compile with `-DTHREADING=0`.
 
 Sieve of Eratosthenes with the following optimizations:
 
-* Segment with ~`sqrt(N)` size segments.
+* Segment with a configurable `SEGMENT_SIZE`.
 
-* Pre-cull small primes with a wheel of size ~`sqrt(N)`.
+* Pre-cull small primes with a wheel of size ~`SEGMENT_SIZE`.
 
 * Skip redudant factors while sieving using a length 30 (2-3-5) wheel.
 
@@ -37,12 +39,6 @@ Sieve of Eratosthenes with the following optimizations:
 * Optimize generation of decimal output using BCD arithmetic.
 
 * Use a dedicated thread for writing to `stdout`.
-
-### Segmentation
-
-To seive all primes up to `LIMIT` we only need `sqrt(LIMIT)` primes to do the sieving. To reduce memory, we can also process the rest of the numbers in segments of size ~`sqrt(LIMIT)` without changing the time complexity.
-
-In this program `SEGMENT_SIZE` is chosen to be smallest power of 2 larger than `sqrt(LIMIT)`.
 
 ### Prime generation
 
@@ -56,11 +52,10 @@ Prime generation is split up into 3 phases.
     * The sieved segment is saved as a template.
       This template is used to initialize the sieve for each subsequent segment so the wheel primes don't need to be explicitly sieved.
 
-2. Generate the sieve primes.
+2. Generate the first segment.
 
-    * Find primes and sieve primes up to `sqrt(SEGMENT_SIZE)`.
-    * Find the remaining primes in the first segment. These do not need to be sieved.
-    * Store all seive primes in an array along with the smallest factor that has yet to be sieved.
+    * First segment is special because the primes required to sieve the segment are in the segment itself.
+    * Store all primes found in a `sieve_primes` array along with the smallest factor that has yet to be sieved.
 
 3. Generate the rest of the primes. \
    For each segment:
@@ -68,6 +63,7 @@ Prime generation is split up into 3 phases.
    * Initialize the segment by copying the wheel template. In general, the segment will be some offset into the wheel.
    * Determine how many sieve primes are relevant to this segment. This way we can ignore sieve primes which are too large to affect the segment.
    * Sieve the sieve primes from the segment, and update their sieve factor.
+   * Add any newly discovered primes to `sieve_primes` array.
 
 ### Sieving loop
 

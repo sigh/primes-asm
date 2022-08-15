@@ -541,8 +541,8 @@ found_segment_primes:
   add       r9, 8                   ; x += 8
   mov       r10, [r13+r9]           ; current_array_value = array[x]
 .add_sieve_primes_loop:
-  cmp       r10, 0
-  je        .add_sieve_primes_inc
+  test      r10, r10
+  jz        .add_sieve_primes_inc
   ; Find the LSB.
   bsf       rcx, r10
   ; Unset the LSB.
@@ -604,8 +604,8 @@ print_segment:
   add       r9, 8                   ; x += 8
   mov       r10, [r13+r9]           ; current_value = array[x]
 .loop:
-  cmp       r10, 0
-  je        .loop_inc
+  test      r10, r10
+  jz        .loop_inc
   ; Find the LSB.
   bsf       rcx, r10
   ; Unset the LSB.
